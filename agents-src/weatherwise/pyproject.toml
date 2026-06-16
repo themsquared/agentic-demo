@@ -1,0 +1,13 @@
+[project]
+name = "weatherwise"
+version = "0.1.0"
+description = "WeatherWise — a packaged weather concierge agent shipped through AgentRegistry"
+readme = "README.md"
+dependencies = [
+  # google-adk 1.25.1 bundles LiteLLM directly; later versions split it into
+  # the [extensions] extra which the kagent-adk base image's uv-managed venv
+  # can't pick up via `pip install`. Pin to match the kagent-adk:0.8.0-beta6
+  # base image (see Dockerfile).
+  "google-adk==1.25.1",
+]
+requires-python = ">=3.13"

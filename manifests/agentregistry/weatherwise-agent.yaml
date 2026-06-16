@@ -1,0 +1,31 @@
+# Act 3 (AgentRegistry → kagent promotion) — the CATALOG entry for a packaged agent.
+#
+# Unlike the declarative agents (manifests/kagent/agents/*, system-prompt only),
+# this is a BYO-IMAGE agent: spec.source.image points at a container built from
+# agents-src/weatherwise/ and loaded into the cluster by setup.sh
+# (`docker build` + `k3d image import`). The agent's LLM and MCP tool traffic
+# both flow through the AgentGateway (see agents-src/weatherwise/weatherwise/agent.py).
+#
+# This is an arctl-managed (ar.dev) resource, applied via the in-cluster helper:
+#   kubectl exec -i deploy/arctl-helper -n agentregistry-system -- arctl-apply < this.yaml
+#
+# Registering it makes the agent browsable in the catalog. It does NOT run yet —
+# deployments.yaml binds it to the kagent runtime to actually deploy it.
+apiVersion: ar.dev/v1alpha1
+kind: Agent
+metadata:
+  name: weatherwise
+spec:
+  description: "Weather concierge — packaged agent shipped as a container via AgentRegistry"
+  language: python
+  framework: adk
+  modelProvider: anthropic
+  modelName: claude-sonnet-4-6
+  source:
+    # Built + k3d-imported by setup.sh; non-registry image (IfNotPresent pull).
+    image: solo-demo/weatherwise:latest
+  mcpServers:
+  # AgentRegistry resolves this ref to the gateway's /mcp/weather endpoint and
+  # injects it into the container as MCP_SERVERS_CONFIG at deploy time.
+  - kind: MCPServer
+    name: weather-mcp

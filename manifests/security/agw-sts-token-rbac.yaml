@@ -1,0 +1,37 @@
+# Supplemental RBAC for the AgentGateway STS token store.
+#
+# The chart (v2026.5.2) grants the controller SA secrets
+# create/delete/get/list/patch/watch cluster-wide, but `update` ONLY on the
+# named KEK secret. During elicitation debugging we hit a state where GitHub
+# code exchanges logged "succeeded" but the token never became available to
+# token exchange ("elicitation_pending" forever) — a completely silent persist
+# failure. Granting blanket secrets `update` in this namespace (this file) and
+# resetting the stuck elicitation fixed it; the two changes were confounded, so
+# this Role is kept as cheap insurance against the silent-failure mode.
+#
+# If a stuck elicitation recurs (completed status but exchanges still fail):
+#   1. DELETE it via the STS API (see DEMO.md troubleshooting)
+#   2. Re-trigger + re-approve
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agw-sts-token-store-fix
+  namespace: agentgateway-system
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agw-sts-token-store-fix
+  namespace: agentgateway-system
+subjects:
+- kind: ServiceAccount
+  name: enterprise-agentgateway
+  namespace: agentgateway-system
+roleRef:
+  kind: Role
+  name: agw-sts-token-store-fix
+  apiGroup: rbac.authorization.k8s.io

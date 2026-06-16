@@ -1,0 +1,22 @@
+# GitHub Remote MCP — an EXTERNAL MCP server hosted by GitHub (Copilot API).
+# AgentGateway proxies the connection over TLS. This backend has no auth on its
+# own; the OAuth elicitation policy in ../security/github-elicitation-policy.yaml
+# attaches to it so the gateway prompts users for consent and stores their token.
+#
+# Exposed at /mcp/github-remote (see routes.yaml).
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: github-mcp
+  namespace: agentgateway-system
+spec:
+  mcp:
+    targets:
+    - name: github
+      static:
+        host: api.githubcopilot.com
+        port: 443
+        path: /mcp/
+        policies:
+          tls:
+            sni: api.githubcopilot.com

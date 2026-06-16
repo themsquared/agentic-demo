@@ -1,0 +1,55 @@
+# orchestrator-agent — the A2A (agent-to-agent) finale.
+#   LLM:   OpenAI GPT-4o via AgentGateway  (different model from its specialists!)
+#   Tools: the three specialist AGENTS, used as tools (type: Agent)
+#
+# Instead of calling MCP servers directly, this agent delegates to other agents
+# over the A2A protocol. GPT-4o orchestrates Claude Sonnet 4 specialists — all
+# LLM traffic flowing through the same AgentGateway. This is multi-model
+# orchestration in a single pane.
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: orchestrator-agent
+  namespace: kagent
+spec:
+  description: "Multi-model orchestrator — delegates to specialist agents via A2A."
+  type: Declarative
+  declarative:
+    runtime: python
+    systemMessage: |
+      You are an orchestrator that delegates to specialist agents:
+      - weather-assistant: weather lookups
+      - research-agent: web research and GitHub profiles
+      - github-assistant: authenticated GitHub operations
+
+      Analyze requests, delegate to the right specialist(s), and synthesize
+      their responses. You run on OpenAI while specialists use Anthropic —
+      demonstrating multi-model orchestration through AgentGateway.
+    modelConfig: openai-via-agw            # ← GPT-4o, while specialists use Claude
+    tools:
+    - type: Agent                          # ← an agent used as a tool (A2A)
+      agent:
+        name: weather-assistant
+        kind: Agent
+        apiGroup: kagent.dev
+    - type: Agent
+      agent:
+        name: research-agent
+        kind: Agent
+        apiGroup: kagent.dev
+    - type: Agent
+      agent:
+        name: github-assistant
+        kind: Agent
+        apiGroup: kagent.dev
+    a2aConfig:
+      skills:
+      - id: multi-domain
+        name: Multi-Domain Orchestration
+        description: "Orchestrates weather, research, and GitHub agents"
+        tags: ["orchestration", "a2a", "multi-agent"]
+    deployment:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi

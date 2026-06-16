@@ -1,0 +1,95 @@
+# arctl-helper — a long-lived in-cluster pod for talking to the AgentRegistry API.
+#
+# WHY THIS EXISTS: AgentRegistry catalog objects (Runtime, MCPServer, Agent,
+# AccessPolicy under ar.dev/v1alpha1) are NOT Kubernetes CRDs — `kubectl apply`
+# cannot create them. They are managed through the registry API via the `arctl`
+# CLI, which needs an OIDC token. The token's issuer must match what the AR server
+# validates (the in-cluster Keycloak, …svc.cluster.local), which is NOT reachable
+# from a laptop without extra DNS plumbing. Running arctl IN-CLUSTER sidesteps all
+# of that: the issuer resolves and matches.
+#
+# The pod installs arctl once, then exposes a tiny `arctl-apply` command that:
+#   1. fetches a fresh token from Keycloak (password grant, demo/demo), and
+#   2. pipes stdin YAML to `arctl apply` against the registry.
+#
+# Usage (from setup.sh / demo.sh):
+#   kubectl exec -i deploy/arctl-helper -n agentregistry-system -- arctl-apply < some.yaml
+#   kubectl exec -i deploy/arctl-helper -n agentregistry-system -- arctl-delete agent <name>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: arctl-helper-scripts
+  namespace: agentregistry-system
+data:
+  entrypoint.sh: |
+    #!/usr/bin/env bash
+    set -e
+    apt-get update -qq && apt-get install -y -qq curl ca-certificates jq >/dev/null
+    curl -sSL https://storage.googleapis.com/agentregistry-enterprise/install.sh | ARCTL_VERSION="${ARCTL_VERSION}" sh
+    cp "$HOME/.arctl/bin/arctl" /usr/local/bin/arctl
+    cp /scripts/arctl-apply /usr/local/bin/arctl-apply
+    cp /scripts/arctl-delete /usr/local/bin/arctl-delete
+    chmod +x /usr/local/bin/arctl-apply /usr/local/bin/arctl-delete
+    touch /tmp/ready
+    echo "arctl-helper ready"
+    sleep infinity
+  arctl-apply: |
+    #!/usr/bin/env bash
+    # Fetch a fresh token (issuer matches what AR validates) and apply stdin YAML.
+    set -e
+    TOKEN=$(curl -s -X POST "${OIDC_ISSUER}/protocol/openid-connect/token" \
+      -d grant_type=password -d client_id=ar-cli-password \
+      -d username=demo -d password=demo -d scope=openid | jq -r .access_token)
+    [ -n "$TOKEN" ] && [ "$TOKEN" != "null" ] || { echo "failed to get token" >&2; exit 1; }
+    cat > /tmp/apply.yaml
+    ARCTL_API_TOKEN="$TOKEN" arctl apply --registry-url "${REG}" -f /tmp/apply.yaml
+  arctl-delete: |
+    #!/usr/bin/env bash
+    # arctl-delete <kind> <name> [--version latest]
+    set -e
+    TOKEN=$(curl -s -X POST "${OIDC_ISSUER}/protocol/openid-connect/token" \
+      -d grant_type=password -d client_id=ar-cli-password \
+      -d username=demo -d password=demo -d scope=openid | jq -r .access_token)
+    ARCTL_API_TOKEN="$TOKEN" arctl delete --registry-url "${REG}" "$@"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: arctl-helper
+  namespace: agentregistry-system
+  labels:
+    app: arctl-helper
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: arctl-helper
+  template:
+    metadata:
+      labels:
+        app: arctl-helper
+    spec:
+      containers:
+      - name: arctl
+        image: debian:bookworm-slim
+        command: ["/usr/bin/env", "bash", "/scripts/entrypoint.sh"]
+        env:
+        - name: OIDC_ISSUER
+          value: http://keycloak.keycloak.svc.cluster.local:8080/realms/agentgateway
+        - name: REG
+          value: http://agentregistry-enterprise-server.agentregistry-system.svc.cluster.local:12121
+        - name: ARCTL_VERSION
+          value: v2026.5.4
+        volumeMounts:
+        - name: scripts
+          mountPath: /scripts
+        readinessProbe:
+          exec:
+            command: ["test", "-f", "/tmp/ready"]
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 60
+      volumes:
+      - name: scripts
+        configMap:
+          name: arctl-helper-scripts

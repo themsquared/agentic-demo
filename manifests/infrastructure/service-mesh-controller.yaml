@@ -1,0 +1,13 @@
+# ServiceMeshController — tells the Gloo Operator to install Istio in ambient mode.
+# The operator reconciles this into istiod, istio-cni, and ztunnel daemonsets.
+# Ambient mode = mTLS for all enrolled pods with NO sidecar injection.
+apiVersion: operator.gloo.solo.io/v1
+kind: ServiceMeshController
+metadata:
+  name: managed-istio
+  labels:
+    app.kubernetes.io/name: managed-istio
+spec:
+  dataplaneMode: Ambient
+  installNamespace: istio-system
+  version: "1.30.0"

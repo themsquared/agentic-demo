@@ -1,0 +1,47 @@
+# weather-assistant — the simplest end-to-end agent.
+#   LLM:  Anthropic via AgentGateway (modelConfig: anthropic-via-agw)
+#   Tool: Weather composable MCP via AgentGateway (mcpServer: agw-weather)
+# Demonstrates the full pipeline with no external auth required.
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: weather-assistant
+  namespace: kagent
+spec:
+  description: "Weather assistant — current conditions for any city or coordinates."
+  type: Declarative
+  declarative:
+    runtime: python
+    systemMessage: |
+      You are a friendly weather assistant. Use the weather tools to look up
+      current conditions. Always call tools by their EXACT names as listed
+      (e.g. "get-weather-by-city_get-weather-by-city", not "get-weather-by-city" —
+      the prefix is part of the name). Report temperature (F), humidity, and wind speed.
+      Interpret weather codes: 0=clear, 1-3=partly cloudy, 45-48=fog,
+      51-55=drizzle, 61-65=rain, 71-75=snow, 80-82=showers, 95-99=thunderstorm.
+      Be concise — one paragraph per response.
+    modelConfig: anthropic-via-agw          # ← LLM through the gateway
+    tools:
+    - type: McpServer
+      mcpServer:
+        name: agw-weather                    # ← MCP through the gateway
+        kind: RemoteMCPServer
+        apiGroup: kagent.dev
+        # Explicit tool names (the discovered names from agw-weather). MUST be a
+        # non-empty list: omitting it crashes the agent pod (ADK wants a list), and
+        # [] is dropped by the controller API → the kagent UI agents page does
+        # `mcpServer.toolNames.map(...)` unguarded and crashes on undefined.
+        toolNames:
+        - get-weather_get-weather
+        - get-weather-by-city_get-weather-by-city
+    a2aConfig:
+      skills:
+      - id: weather-lookup
+        name: Weather Lookup
+        description: "Look up current weather for any city or coordinates"
+        tags: ["weather", "utility"]
+    deployment:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi

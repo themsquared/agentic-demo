@@ -1,0 +1,29 @@
+# GitHub elicitation policy — attaches an OAuth consent (elicitation) flow to the
+# GitHub Remote MCP backend. When an agent calls /mcp/github-remote with no stored
+# token, AgentGateway returns an elicitation URL; the user completes GitHub OAuth,
+# and the token is stored in the gateway's STS for subsequent calls (the OBO pattern).
+#
+# The OAuth client credentials live in the 'elicitation-oidc' Secret, created by
+# the script from your GitHub OAuth App:
+#   kubectl create secret generic elicitation-oidc -n agentgateway-system \
+#     --from-literal=type=oauth \
+#     --from-literal=client_id=$GITHUB_CLIENT_ID \
+#     --from-literal=client_secret=$GITHUB_CLIENT_SECRET \
+#     --from-literal=authorize_url=https://github.com/login/oauth/authorize \
+#     --from-literal=access_token_url=https://github.com/login/oauth/access_token \
+#     --from-literal=scopes=read:user,repo \
+#     --from-literal=redirect_uri=http://localhost:9090/age/elicitations  ...
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: github-mcp-elicit-policy
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - name: github-mcp                  # ← attaches to the GitHub Remote MCP backend
+    kind: AgentgatewayBackend
+    group: agentgateway.dev
+  backend:
+    tokenExchange:
+      elicitation:
+        secretName: elicitation-oidc  # ← GitHub OAuth credentials

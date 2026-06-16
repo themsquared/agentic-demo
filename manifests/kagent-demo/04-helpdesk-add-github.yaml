@@ -1,0 +1,56 @@
+# Act 2b — ADD TOOLS to the existing agent (re-apply with a second tool server).
+#
+# Same helpdesk agent as 02, now with a SECOND tools entry referencing the
+# kdemo-github tool server. Re-applying rolls the agent; it can now look up
+# GitHub users in addition to weather. This is how you grow an agent's
+# capabilities: register a tool server, then add a tools entry that references it.
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: helpdesk
+  namespace: kagent
+spec:
+  description: "Helpdesk — kagent demo agent; weather + GitHub profile lookup."
+  type: Declarative
+  declarative:
+    runtime: python
+    systemMessage: |
+      You are Helpdesk, a concise assistant. Use the tools available to you to
+      answer questions. Always call tools by their EXACT names as listed (the
+      prefix is part of the name). For weather, report temperature (F), humidity,
+      and wind, and interpret weather codes (0=clear, 1-3=partly cloudy, 45-48=fog,
+      51-55=drizzle, 61-65=rain, 71-75=snow, 80-82=showers, 95-99=thunderstorm).
+      For GitHub users, summarize who they are and what they work on.
+      Keep answers to one short paragraph.
+    modelConfig: anthropic-via-agw
+    tools:
+    - type: McpServer
+      mcpServer:
+        name: kdemo-weather
+        kind: RemoteMCPServer
+        apiGroup: kagent.dev
+        toolNames:
+        - get-weather_get-weather
+        - get-weather-by-city_get-weather-by-city
+    - type: McpServer
+      mcpServer:
+        name: kdemo-github
+        kind: RemoteMCPServer
+        apiGroup: kagent.dev
+        toolNames:
+        - github-user-summary
+    a2aConfig:
+      skills:
+      - id: weather
+        name: Weather Lookup
+        description: "Current weather for any city or coordinates"
+        tags: ["weather"]
+      - id: github-profile
+        name: GitHub Profile Lookup
+        description: "Summarize a GitHub user"
+        tags: ["github"]
+    deployment:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi

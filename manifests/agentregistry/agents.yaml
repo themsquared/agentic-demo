@@ -1,0 +1,57 @@
+# AgentRegistry Agent catalog entries — discovery metadata for each agent:
+# framework, language, model, and MCP-server dependencies. These mirror the
+# kagent agents and let teams browse/govern them from the registry.
+apiVersion: ar.dev/v1alpha1
+kind: Agent
+metadata:
+  name: weather-assistant
+spec:
+  description: "Weather assistant — current conditions for any city"
+  language: python
+  framework: adk
+  modelProvider: anthropic
+  modelName: claude-sonnet-4-6
+  mcpServers:
+  - kind: MCPServer
+    name: weather-mcp
+---
+apiVersion: ar.dev/v1alpha1
+kind: Agent
+metadata:
+  name: research-agent
+spec:
+  description: "Technical research — web pages and GitHub profiles"
+  language: python
+  framework: adk
+  modelProvider: anthropic
+  modelName: claude-sonnet-4-6
+  mcpServers:
+  - kind: MCPServer
+    name: website-fetcher-mcp
+  - kind: MCPServer
+    name: github-profile-mcp
+---
+apiVersion: ar.dev/v1alpha1
+kind: Agent
+metadata:
+  name: github-assistant
+spec:
+  description: "GitHub assistant — OAuth-authenticated access"
+  language: python
+  framework: adk
+  modelProvider: anthropic
+  modelName: claude-sonnet-4-6
+  mcpServers:
+  - kind: MCPServer
+    name: github-remote-mcp
+---
+apiVersion: ar.dev/v1alpha1
+kind: Agent
+metadata:
+  name: orchestrator-agent
+spec:
+  description: "Multi-model orchestrator — A2A delegation to specialists"
+  language: python
+  framework: adk
+  modelProvider: openai
+  modelName: gpt-4o

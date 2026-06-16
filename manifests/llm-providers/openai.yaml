@@ -1,0 +1,50 @@
+# OpenAI (GPT-4o) exposed through AgentGateway at /openai.
+# Same three-piece pattern as anthropic.yaml — only the provider/model differ.
+#
+# Secret 'openai-secret' is created by the script:
+#   kubectl create secret generic openai-secret \
+#     --from-literal=Authorization=$OPENAI_API_KEY
+#
+# Clients hit localhost:8080/openai/v1/chat/completions with no API key.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: openai
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      openai:
+        model: gpt-4o
+  policies:
+    auth:
+      secretRef:
+        name: openai-secret
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openai
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /openai
+    # Strip browser CORS headers (the Solo UI playground is a browser). Keeps the
+    # upstream call server-side, matching the Anthropic route's behavior.
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        remove:
+        - Origin
+        - Referer
+    backendRefs:
+    - name: openai
+      namespace: agentgateway-system
+      group: agentgateway.dev
+      kind: AgentgatewayBackend

@@ -1,0 +1,251 @@
+# Keycloak realm import — defines the 'agentgateway' realm with every OIDC
+# client the demo needs:
+#   - agw-ui-frontend / agw-ui-backend   → AgentGateway Enterprise UI
+#   - kagent-ui / kagent-backend         → kagent UI + token validation
+#   - ar-ui / ar-backend                 → AgentRegistry UI + token validation
+#   - ar-cli-interactive / ar-cli-password → arctl CLI logins
+#
+# RBAC: each client carries a group-membership protocol mapper that puts the
+# user's groups into a 'Groups' claim (used by AgentRegistry AccessPolicy and AGW
+# JWT policies). The 'demo' user is in 'admins'; new self-registered users default
+# to 'viewers'.
+#
+# IMPORTANT: we do NOT override the realm's clientScopes / default client scopes.
+# Doing so drops Keycloak's built-in 'profile' and 'email' scopes, which the UIs
+# request — causing "invalid_scope: openid email profile" at login. We rely on the
+# built-in scopes and add the Groups claim via per-client mappers instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm
+  namespace: keycloak
+data:
+  agentgateway-realm.json: |
+    {
+      "realm": "agentgateway",
+      "enabled": true,
+      "sslRequired": "none",
+      "registrationAllowed": true,
+      "groups": [
+        { "name": "admins" },
+        { "name": "developers" },
+        { "name": "viewers" }
+      ],
+      "defaultGroups": [ "/viewers" ],
+      "clients": [
+        {
+          "clientId": "agw-ui-frontend",
+          "enabled": true,
+          "publicClient": true,
+          "directAccessGrantsEnabled": true,
+          "standardFlowEnabled": true,
+          "redirectUris": ["*"],
+          "webOrigins": ["*"],
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "Groups"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "agw-ui-backend",
+          "enabled": true,
+          "publicClient": false,
+          "secret": "agw-backend-secret",
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": true,
+          "redirectUris": ["*"],
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "Groups"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "kagent-backend",
+          "enabled": true,
+          "publicClient": false,
+          "secret": "kagent-backend-secret",
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": true,
+          "redirectUris": ["*"],
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "Groups"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "kagent-ui",
+          "enabled": true,
+          "publicClient": true,
+          "directAccessGrantsEnabled": true,
+          "standardFlowEnabled": true,
+          "redirectUris": ["*"],
+          "webOrigins": ["*"],
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "Groups"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "ar-backend",
+          "enabled": true,
+          "publicClient": false,
+          "secret": "ar-backend-secret",
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": true,
+          "standardFlowEnabled": true,
+          "redirectUris": ["*"],
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "Groups"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "ar-ui",
+          "enabled": true,
+          "publicClient": true,
+          "directAccessGrantsEnabled": true,
+          "standardFlowEnabled": true,
+          "redirectUris": ["*"],
+          "webOrigins": ["*"],
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "Groups"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "ar-cli-interactive",
+          "enabled": true,
+          "publicClient": true,
+          "directAccessGrantsEnabled": true,
+          "standardFlowEnabled": true,
+          "redirectUris": ["*"],
+          "attributes": {
+            "oauth2.device.authorization.grant.enabled": "true"
+          },
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "Groups"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": "ar-cli-password",
+          "enabled": true,
+          "publicClient": true,
+          "directAccessGrantsEnabled": true,
+          "standardFlowEnabled": true,
+          "redirectUris": ["*"],
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "full.path": "false",
+                "userinfo.token.claim": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "claim.name": "Groups"
+              }
+            }
+          ]
+        }
+      ],
+      "users": [
+        {
+          "username": "demo",
+          "enabled": true,
+          "email": "demo@solo.io",
+          "emailVerified": true,
+          "firstName": "Demo",
+          "lastName": "User",
+          "credentials": [
+            {
+              "type": "password",
+              "value": "demo",
+              "temporary": false
+            }
+          ],
+          "groups": [ "/admins" ]
+        }
+      ]
+    }

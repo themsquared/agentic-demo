@@ -1,0 +1,73 @@
+# github-assistant — OBO / elicitation showcase, agent edition (chat AS the user).
+#   LLM:   Anthropic via AgentGateway
+#   Tools: GitHub Remote MCP via AgentGateway — authenticated AS THE CALLING USER
+#
+# OBO chain (all tokens are Keycloak-issued, which AGW's STS subjectValidator trusts):
+#   UI chat (user's Keycloak JWT) → kagent controller (SKIP_OBO=true → passes the
+#   RAW user token through, NOT a kagent-minted token) → agent (KAGENT_PROPAGATE_TOKEN
+#   forwards the inbound Authorization to the MCP call) → AgentGateway
+#   /mcp/github-remote → STS exchanges the user JWT for their stored GitHub token
+#   → api.githubcopilot.com as the user.
+#
+# REQUIRES (set by setup.sh):
+#   - controller SKIP_OBO=true   (else it mints a kagent.kagent-issued token the
+#     STS rejects — issuer mismatch; this was the original "doesn't work in chat" bug)
+#   - KAGENT_PROPAGATE_TOKEN=true on this agent (below)
+#   - AGW STS subjectValidator → Keycloak JWKS (default in this repo)
+# First use per user → approve the GitHub consent at http://localhost:9090/age/elicitations.
+# (STS tokens live in in-pod SQLite — a control-plane rebuild requires re-consent.)
+#
+# toolNames are EXPLICIT + verified against the live gateway tools/list (kagent
+# cannot server-side-discover this OAuth MCP, and empty toolNames crash the UI).
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: github-assistant
+  namespace: kagent
+spec:
+  description: "GitHub assistant — acts on YOUR GitHub account via OAuth on-behalf-of."
+  type: Declarative
+  declarative:
+    runtime: python
+    systemMessage: |
+      You are a GitHub assistant with authenticated access to the user's OWN
+      GitHub account via an OAuth on-behalf-of flow. You can identify the user
+      (get_me), search repositories/code/users, and list issues, pull requests,
+      commits, branches, and file contents.
+
+      Always call tools by their EXACT listed names. If a tool call fails with an
+      authorization or token-exchange error, tell the user to complete the GitHub
+      consent at http://localhost:9090/age/elicitations and try again.
+    modelConfig: anthropic-via-agw
+    deployment:
+      env:
+      - name: KAGENT_PROPAGATE_TOKEN     # forward the caller's Authorization to the MCP (OBO)
+        value: "true"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+    tools:
+    - type: McpServer
+      mcpServer:
+        name: agw-github-remote
+        kind: RemoteMCPServer
+        apiGroup: kagent.dev
+        toolNames:
+        - get_me
+        - search_repositories
+        - search_code
+        - search_users
+        - list_issues
+        - list_pull_requests
+        - list_commits
+        - list_branches
+        - get_file_contents
+        allowedHeaders:
+        - Authorization
+    a2aConfig:
+      skills:
+      - id: github-obo
+        name: GitHub (as the user)
+        description: "Authenticated GitHub operations on behalf of the calling user (OAuth OBO)"
+        tags: ["github", "obo", "authenticated"]

@@ -1,0 +1,19 @@
+{
+  "name": "weatherwise",
+  "description": "Weather concierge — live conditions for any city, shipped via AgentRegistry.",
+  "url": "http://localhost:8080",
+  "version": "0.1.0",
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": ["text"],
+  "defaultOutputModes": ["text"],
+  "skills": [
+    {
+      "id": "weather",
+      "name": "weather lookup",
+      "description": "Report current weather conditions for a given city.",
+      "tags": ["weather", "demo"]
+    }
+  ]
+}

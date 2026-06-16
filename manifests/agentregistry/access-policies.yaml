@@ -1,0 +1,66 @@
+# AgentRegistry AccessPolicies — RBAC. The principal 'Role' name matches a
+# Keycloak group surfaced in the 'Groups' JWT claim. Three tiers:
+#   admins     → full registry + runtime control (publish, deploy, invoke, delete)
+#   developers → browse the catalog + invoke any agent
+#   viewers    → browse the catalog only (read-only)
+# The demo user is in 'admins'; new self-registered users default to 'viewers'.
+apiVersion: ar.dev/v1alpha1
+kind: AccessPolicy
+metadata:
+  name: admins-full-access
+spec:
+  description: "Full access for admins"
+  principals:
+  - kind: Role
+    name: admins
+  rules:
+  - actions: ["registry:*"]
+    resources:
+    - kind: agent
+      name: "*"
+    - kind: server
+      name: "*"
+    - kind: runtime
+      name: "*"
+  - actions: ["runtime:*"]
+    resources:
+    - kind: agent
+      name: "*"
+---
+apiVersion: ar.dev/v1alpha1
+kind: AccessPolicy
+metadata:
+  name: developers-read-invoke
+spec:
+  description: "Browse catalog + invoke agents"
+  principals:
+  - kind: Role
+    name: developers
+  rules:
+  - actions: ["registry:read"]
+    resources:
+    - kind: agent
+      name: "*"
+    - kind: server
+      name: "*"
+  - actions: ["runtime:*"]
+    resources:
+    - kind: agent
+      name: "*"
+---
+apiVersion: ar.dev/v1alpha1
+kind: AccessPolicy
+metadata:
+  name: viewers-browse-only
+spec:
+  description: "Browse the catalog (read-only)"
+  principals:
+  - kind: Role
+    name: viewers
+  rules:
+  - actions: ["registry:read"]
+    resources:
+    - kind: agent
+      name: "*"
+    - kind: server
+      name: "*"

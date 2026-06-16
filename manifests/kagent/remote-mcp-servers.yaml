@@ -1,0 +1,59 @@
+# kagent RemoteMCPServers — tell agents where to find MCP tools.
+# Every URL points at an AgentGateway route, so the tool-call path is:
+#
+#   Agent → kagent RemoteMCPServer → AgentGateway → actual MCP backend
+#
+# That means the gateway sees (and can govern) every tool call, just like it
+# does every LLM call.
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: agw-website-fetcher
+  namespace: kagent
+spec:
+  description: "Website fetcher via AgentGateway"
+  protocol: STREAMABLE_HTTP
+  url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/website
+  timeout: 30s
+---
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: agw-weather
+  namespace: kagent
+spec:
+  description: "Weather (composable) via AgentGateway"
+  protocol: STREAMABLE_HTTP
+  url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/weather
+  timeout: 30s
+---
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: agw-github-profile
+  namespace: kagent
+spec:
+  description: "GitHub Profile (composable) via AgentGateway"
+  protocol: STREAMABLE_HTTP
+  url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/github-profile
+  timeout: 30s
+---
+# GitHub Remote MCP (OAuth/OBO) — used by github-assistant for chat-as-the-user.
+#
+# kagent's server-side tool discovery can't authenticate to this OAuth MCP, so it
+# stays Accepted=False with no discoveredTools — expected and fine: the agent
+# declares EXPLICIT toolNames (verified against the live gateway), so tools are
+# wired without discovery. At runtime the agent forwards the caller's Keycloak
+# token (KAGENT_PROPAGATE_TOKEN) and the gateway STS exchanges it for the user's
+# GitHub token. See github-assistant.yaml for the full OBO chain + the required
+# controller SKIP_OBO=true.
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: agw-github-remote
+  namespace: kagent
+spec:
+  description: "GitHub MCP (OAuth/OBO via AgentGateway) — acts as the calling user"
+  protocol: STREAMABLE_HTTP
+  url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/github-remote
+  timeout: 60s

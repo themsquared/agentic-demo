@@ -1,0 +1,55 @@
+# Anthropic (Claude Sonnet 4) exposed through AgentGateway at /anthropic.
+#
+# Three pieces make an LLM available:
+#   1. A Secret with the API key      → created by the script as 'anthropic-secret'
+#                                         (kubectl create secret generic anthropic-secret
+#                                          --from-literal=Authorization=$ANTHROPIC_API_KEY)
+#   2. An AgentgatewayBackend          → provider + model + which secret to use
+#   3. An HTTPRoute                    → the path clients call
+#
+# Clients hit localhost:8080/anthropic/v1/messages WITHOUT an API key —
+# the gateway injects it from the secret. Keys never leave the cluster.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: anthropic
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      anthropic:
+        model: claude-sonnet-4-6
+  policies:
+    auth:
+      secretRef:
+        name: anthropic-secret   # ← key lives here, injected at request time
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: anthropic
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /anthropic
+    # Strip browser CORS headers before the gateway calls Anthropic server-side.
+    # Anthropic rejects requests carrying a browser Origin (401: "CORS requests
+    # must set 'anthropic-dangerous-direct-browser-access'"). The Solo UI
+    # playground is a browser, so it sends Origin/Referer — remove them here.
+    filters:
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        remove:
+        - Origin
+        - Referer
+    backendRefs:
+    - name: anthropic
+      namespace: agentgateway-system
+      group: agentgateway.dev
+      kind: AgentgatewayBackend

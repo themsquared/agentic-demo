@@ -1,0 +1,47 @@
+# Act 2a — Build an AGENT that uses the tool server (adding tools to an agent).
+#
+# A declarative agent: a system prompt + a model + a list of tools. No image,
+# no code — kagent runs it in its shared ADK runtime. The `tools` block is where
+# you ADD TOOLS to an agent: each entry references a RemoteMCPServer (the tool
+# server from Act 1) and the specific tool names the agent may call.
+#
+# toolNames MUST be explicit and non-empty (omitting it crashes the agent pod;
+# an empty list is dropped by the API and crashes the UI agents page).
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: helpdesk
+  namespace: kagent
+spec:
+  description: "Helpdesk — kagent demo agent; starts with weather, gains tools live."
+  type: Declarative
+  declarative:
+    runtime: python
+    systemMessage: |
+      You are Helpdesk, a concise assistant. Use the tools available to you to
+      answer questions. Always call tools by their EXACT names as listed (the
+      prefix is part of the name). For weather, report temperature (F), humidity,
+      and wind, and interpret weather codes (0=clear, 1-3=partly cloudy, 45-48=fog,
+      51-55=drizzle, 61-65=rain, 71-75=snow, 80-82=showers, 95-99=thunderstorm).
+      Keep answers to one short paragraph.
+    modelConfig: anthropic-via-agw
+    tools:
+    - type: McpServer
+      mcpServer:
+        name: kdemo-weather
+        kind: RemoteMCPServer
+        apiGroup: kagent.dev
+        toolNames:
+        - get-weather_get-weather
+        - get-weather-by-city_get-weather-by-city
+    a2aConfig:
+      skills:
+      - id: weather
+        name: Weather Lookup
+        description: "Current weather for any city or coordinates"
+        tags: ["weather"]
+    deployment:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi

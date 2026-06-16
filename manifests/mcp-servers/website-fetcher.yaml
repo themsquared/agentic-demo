@@ -1,0 +1,58 @@
+# Website Fetcher — a real MCP server running as a pod in the cluster.
+# Fetches and parses web pages so agents can read them.
+#
+# The KEY detail is on the Service: appProtocol: agentgateway.dev/mcp
+# That marker tells AgentGateway to treat this as MCP traffic (not plain HTTP),
+# so it speaks the MCP protocol to the backend.
+#
+# Exposed at /mcp/website (see routes.yaml).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-website-fetcher
+  namespace: agentgateway-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-website-fetcher
+  template:
+    metadata:
+      labels:
+        app: mcp-website-fetcher
+    spec:
+      containers:
+      - name: mcp-website-fetcher
+        image: ghcr.io/peterj/mcp-website-fetcher:main
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-website-fetcher
+  namespace: agentgateway-system
+  labels:
+    app: mcp-website-fetcher
+spec:
+  selector:
+    app: mcp-website-fetcher
+  ports:
+  - port: 80
+    targetPort: 8000
+    appProtocol: agentgateway.dev/mcp   # ← marks this as an MCP backend
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: mcp-website-fetcher
+  namespace: agentgateway-system
+spec:
+  mcp:
+    targets:
+    - name: website-fetcher
+      static:
+        host: mcp-website-fetcher.agentgateway-system.svc.cluster.local
+        port: 80
+        protocol: SSE

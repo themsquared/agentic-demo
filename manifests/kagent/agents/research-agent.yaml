@@ -1,0 +1,42 @@
+# research-agent — a multi-tool agent.
+#   LLM:   Anthropic via AgentGateway
+#   Tools: website fetcher + GitHub profile (both composable, both via the gateway)
+# Demonstrates one agent fanning out across multiple MCP servers through a single gateway.
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: research-agent
+  namespace: kagent
+spec:
+  description: "Technical research — fetches web pages and GitHub profiles."
+  type: Declarative
+  declarative:
+    runtime: python
+    systemMessage: |
+      You are a technical research assistant. You can fetch web pages and look up
+      GitHub profiles. Summarize findings with bullet points. Cite sources.
+    modelConfig: anthropic-via-agw
+    tools:
+    - type: McpServer
+      mcpServer:
+        name: agw-website-fetcher
+        kind: RemoteMCPServer
+        apiGroup: kagent.dev
+        toolNames: [fetch]                   # explicit, non-empty (see weather-assistant note)
+    - type: McpServer
+      mcpServer:
+        name: agw-github-profile
+        kind: RemoteMCPServer
+        apiGroup: kagent.dev
+        toolNames: [github-user-summary]
+    a2aConfig:
+      skills:
+      - id: web-research
+        name: Web Research
+        description: "Fetch and summarize web pages and GitHub profiles"
+        tags: ["research", "web", "github"]
+    deployment:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi

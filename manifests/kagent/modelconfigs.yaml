@@ -1,0 +1,73 @@
+# kagent ModelConfigs — tell agents which LLM to use and how to reach it.
+#
+# The *-via-agw configs point baseUrl at the AgentGateway proxy, so every LLM
+# call an agent makes is routed through the gateway (centralized keys, rate
+# limiting, full observability). The *-direct configs hit the provider directly
+# and exist for side-by-side comparison demos.
+#
+# All four reference API-key secrets created by the script in the kagent namespace:
+#   kubectl create secret generic anthropic-api-key --from-literal=key=$ANTHROPIC_API_KEY
+#   kubectl create secret generic openai-api-key    --from-literal=key=$OPENAI_API_KEY
+
+# ── Anthropic via AgentGateway (recommended) ──────────────────────────────────
+# NOTE: provider is OpenAI even though the model is Claude. AgentGateway's LLM
+# routes speak the unified OpenAI-compatible API and translate to the provider's
+# native API upstream. kagent's Anthropic provider speaks Anthropic-native
+# (tools without a "type" field), which the gateway rejects with
+# "failed to marshal request: missing field `type`" as soon as an agent sends
+# tool definitions. So: OpenAI protocol from the agent → gateway translates →
+# Anthropic upstream. The API key here is never used (the gateway injects the
+# real one from its own secret).
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: anthropic-via-agw
+  namespace: kagent
+spec:
+  provider: OpenAI
+  model: claude-sonnet-4-6
+  apiKeySecret: anthropic-api-key
+  apiKeySecretKey: key
+  openAI:
+    baseUrl: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/anthropic  # ← through the gateway
+    maxTokens: 8192
+---
+# ── OpenAI via AgentGateway ───────────────────────────────────────────────────
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: openai-via-agw
+  namespace: kagent
+spec:
+  provider: OpenAI
+  model: gpt-4o
+  apiKeySecret: openai-api-key
+  apiKeySecretKey: key
+  openAI:
+    baseUrl: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/openai   # ← through the gateway
+---
+# ── Anthropic direct (bypasses the gateway, for comparison) ───────────────────
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: anthropic-direct
+  namespace: kagent
+spec:
+  provider: Anthropic
+  model: claude-sonnet-4-6
+  apiKeySecret: anthropic-api-key
+  apiKeySecretKey: key
+  anthropic:
+    maxTokens: 8192
+---
+# ── OpenAI direct ─────────────────────────────────────────────────────────────
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: openai-direct
+  namespace: kagent
+spec:
+  provider: OpenAI
+  model: gpt-4o
+  apiKeySecret: openai-api-key
+  apiKeySecretKey: key

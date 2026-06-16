@@ -1,0 +1,16 @@
+# The federated AgentGateway endpoint as a first-class catalog entry.
+#
+# Rather than cataloging each MCP server separately, teams can publish the single
+# governed, federated endpoint (/mcp/federated) as ONE catalog item. Agents that
+# reference it get every federated tool server through one URL — with all of
+# AgentGateway's auth, policy, and telemetry applied.
+apiVersion: ar.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: mcp-gateway
+spec:
+  title: "Gateway MCP (Federated)"
+  description: "Single governed endpoint federating multiple MCP servers via AgentGateway Virtual MCP."
+  remote:
+    type: streamable-http
+    url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/federated

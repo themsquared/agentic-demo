@@ -1,0 +1,51 @@
+# Keycloak — OIDC identity provider for the whole demo.
+# Runs in dev mode and imports the 'agentgateway' realm from the ConfigMap
+# mounted at /opt/keycloak/data/import (see keycloak-realm.yaml).
+#
+# Bootstrap admin: admin / admin
+# Demo realm user: demo / demo  (member of the 'admins' group)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keycloak
+  template:
+    metadata:
+      labels:
+        app: keycloak
+    spec:
+      containers:
+      - name: keycloak
+        image: quay.io/keycloak/keycloak:26.0
+        args: ["start-dev", "--import-realm"]
+        env:
+        - name: KC_BOOTSTRAP_ADMIN_USERNAME
+          value: admin
+        - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+          value: admin
+        ports:
+        - containerPort: 8080
+        volumeMounts:
+        - name: realm-config
+          mountPath: /opt/keycloak/data/import
+      volumes:
+      - name: realm-config
+        configMap:
+          name: keycloak-realm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  selector:
+    app: keycloak
+  ports:
+  - port: 8080
+    targetPort: 8080

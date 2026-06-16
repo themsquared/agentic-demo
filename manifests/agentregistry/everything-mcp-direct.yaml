@@ -1,0 +1,18 @@
+# BEFORE promotion (Act 6, step 1): the "everything" MCP server is cataloged in
+# AgentRegistry, but its URL points straight at the raw in-cluster Service —
+# traffic bypasses AgentGateway entirely.
+#
+# It's discoverable, but UNGOVERNED: no centralized auth, no policy enforcement,
+# no telemetry/tracing, and it can't be federated with other tool servers.
+#
+# This is the starting state we'll "promote" to the gateway.
+apiVersion: ar.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: everything-mcp
+spec:
+  title: "Everything Tools (direct)"
+  description: "Reference MCP server — reachable directly at its raw service (NOT through the gateway)."
+  remote:
+    type: streamable-http
+    url: http://mcp-server-everything.agentgateway-system.svc.cluster.local:3001/mcp   # ← raw service, ungoverned

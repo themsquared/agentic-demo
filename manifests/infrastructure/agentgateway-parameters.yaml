@@ -1,0 +1,16 @@
+# EnterpriseAgentgatewayParameters — extra env injected into the AgentGateway
+# proxy pods. Points the proxy at the STS (Secure Token Service) endpoint so it
+# can mint/exchange tokens for the OBO + elicitation flows.
+#
+# Referenced by the Gateway's infrastructure.parametersRef (see agentgateway-gateway.yaml).
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayParameters
+metadata:
+  name: agw-params
+  namespace: agentgateway-system
+spec:
+  env:
+  - name: STS_URI
+    value: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/elicitations/oauth2/token
+  - name: STS_AUTH_TOKEN
+    value: /var/run/secrets/xds-tokens/xds-token

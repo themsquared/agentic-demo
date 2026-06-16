@@ -1,0 +1,40 @@
+# Retry policy for the LLM routes.
+#
+# LLM providers throw transient capacity errors (Anthropic 529 "Overloaded",
+# 503s, 429s). Nothing else in the chain retries — the kagent ADK surfaces the
+# first failure straight to the user ("Error code: 529 ... Overloaded"). Retrying
+# at the gateway absorbs these blips for EVERY client at once (agents, playground,
+# curl) with exponential backoff.
+#
+# Codes: 429 rate-limit, 500, 502/503/504 upstream trouble, 529 Anthropic overload.
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: llm-retry-anthropic
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - kind: HTTPRoute
+    name: anthropic
+    group: gateway.networking.k8s.io
+  traffic:
+    retry:
+      attempts: 3
+      backoff: 1s
+      codes: [429, 500, 502, 503, 504, 529]
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: llm-retry-openai
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - kind: HTTPRoute
+    name: openai
+    group: gateway.networking.k8s.io
+  traffic:
+    retry:
+      attempts: 3
+      backoff: 1s
+      codes: [429, 500, 502, 503, 504, 529]

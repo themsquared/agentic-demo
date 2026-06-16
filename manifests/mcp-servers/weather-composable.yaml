@@ -1,0 +1,96 @@
+# Weather — a COMPOSABLE MCP server. No container, no code.
+# AgentGateway Enterprise turns a plain HTTP API (Open-Meteo) into MCP tools
+# defined entirely in YAML, using CEL expressions to build the request URL
+# and format the response.
+#
+# Two tools are defined:
+#   - get-weather          → by latitude/longitude
+#   - get-weather-by-city  → by city name (CEL ternary maps name → lat/lon)
+#
+# Exposed at /mcp/weather (see routes.yaml).
+
+# Upstream: the Open-Meteo HTTP API the steps call into.
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayBackend
+metadata:
+  name: open-meteo-api
+  namespace: agentgateway-system
+spec:
+  static:
+    host: api.open-meteo.com
+    port: 443
+  policies:
+    tls:
+      sni: api.open-meteo.com   # TLS origination lives under spec.policies.tls
+---
+# The composable MCP definition.
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayBackend
+metadata:
+  name: weather-mcp
+  namespace: agentgateway-system
+spec:
+  entMcp:
+    targets:
+    - name: get-weather
+      custom:
+        description: "Get current weather for a location by latitude and longitude."
+        inputSchema:                       # ← JSON Schema the LLM sees for this tool
+          type: object
+          additionalProperties: false
+          required: [latitude, longitude]
+          properties:
+            latitude:
+              type: number
+              description: "Latitude (e.g. 37.7749 for San Francisco)"
+            longitude:
+              type: number
+              description: "Longitude (e.g. -122.4194 for San Francisco)"
+        steps:
+        - name: forecast
+          http:
+            backendRef:
+              group: enterpriseagentgateway.solo.io
+              kind: EnterpriseAgentgatewayBackend
+              name: open-meteo-api
+            method: GET
+            # CEL expression — builds the query string from the tool input
+            path: '"/v1/forecast?latitude=" + string(input.latitude) + "&longitude=" + string(input.longitude) + "&current=temperature_2m,wind_speed_10m,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph"'
+            headers:
+            - name: Accept
+              value: '"application/json"'
+        # CEL expression — formats the upstream JSON into the tool's text output
+        output: |
+          "Current weather at (" + string(input.latitude) + ", " + string(input.longitude) + "): "
+          + "Temperature: " + string(output.forecast.current.temperature_2m) + " F, "
+          + "Wind: " + string(output.forecast.current.wind_speed_10m) + " mph, "
+          + "Weather code: " + string(output.forecast.current.weather_code)
+    - name: get-weather-by-city
+      custom:
+        description: "Get current weather for a well-known city."
+        inputSchema:
+          type: object
+          additionalProperties: false
+          required: [city]
+          properties:
+            city:
+              type: string
+              description: "City name: San Francisco, New York, London, Tokyo, Sydney, Cambridge"
+        steps:
+        - name: geocode
+          http:
+            backendRef:
+              group: enterpriseagentgateway.solo.io
+              kind: EnterpriseAgentgatewayBackend
+              name: open-meteo-api
+            method: GET
+            # CEL ternary chain maps a city name to coordinates inline
+            path: '"/v1/forecast?latitude=" + (input.city == "San Francisco" ? "37.7749" : input.city == "New York" ? "40.7128" : input.city == "London" ? "51.5074" : input.city == "Tokyo" ? "35.6762" : input.city == "Sydney" ? "-33.8688" : input.city == "Cambridge" ? "42.3736" : "0") + "&longitude=" + (input.city == "San Francisco" ? "-122.4194" : input.city == "New York" ? "-74.0060" : input.city == "London" ? "-0.1278" : input.city == "Tokyo" ? "139.6503" : input.city == "Sydney" ? "151.2093" : input.city == "Cambridge" ? "-71.1097" : "0") + "&current=temperature_2m,wind_speed_10m,relative_humidity_2m,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph"'
+            headers:
+            - name: Accept
+              value: '"application/json"'
+        output: |
+          "Weather in " + input.city + ": "
+          + "Temperature: " + string(output.geocode.current.temperature_2m) + " F, "
+          + "Humidity: " + string(output.geocode.current.relative_humidity_2m) + "%, "
+          + "Wind: " + string(output.geocode.current.wind_speed_10m) + " mph"

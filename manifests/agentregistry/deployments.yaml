@@ -1,0 +1,25 @@
+# Act 3 — the PROMOTION itself: deploy a catalog Agent onto the kagent runtime.
+#
+# A Deployment binds a catalog resource (targetRef) to a runtime (runtimeRef).
+# Applying this makes AgentRegistry's Kagent adapter translate the catalog Agent
+# into a native kagent.dev/Agent (type: BYO) running the agent's source.image in
+# the kagent namespace, register it with the kagent controller, and surface it in
+# the UI — all from one declarative record.
+#
+# arctl-managed (ar.dev); apply via the helper:
+#   kubectl exec -i deploy/arctl-helper -n agentregistry-system -- arctl-apply < this.yaml
+#
+# Requires the istiod alias (manifests/infrastructure/istiod-alias.yaml) so the
+# BYO agent's ambient waypoint can fetch its mTLS cert — otherwise the agent runs
+# but is unreachable in-mesh. setup.sh applies that alias.
+apiVersion: ar.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: weatherwise-kagent
+spec:
+  targetRef:
+    kind: Agent
+    name: weatherwise
+  runtimeRef:
+    kind: Runtime
+    name: kagent     # the Kagent runtime (manifests/agentregistry/runtime.yaml)

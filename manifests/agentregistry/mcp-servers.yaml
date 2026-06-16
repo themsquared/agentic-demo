@@ -1,0 +1,47 @@
+# AgentRegistry MCPServer catalog entries — make the MCP servers discoverable
+# in the registry UI/API with title + description. Each points at its
+# AgentGateway route. These are the ar.dev catalog records, distinct from the
+# AgentGateway backends that actually serve the traffic.
+apiVersion: ar.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: weather-mcp
+spec:
+  description: "Weather — composable tool via AgentGateway (Open-Meteo)"
+  title: "Weather (Composable)"
+  remote:
+    type: streamable-http
+    url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/weather
+---
+apiVersion: ar.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: website-fetcher-mcp
+spec:
+  description: "Website fetcher — fetches and parses web page content"
+  title: "Website Fetcher"
+  remote:
+    type: streamable-http
+    url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/website
+---
+apiVersion: ar.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-profile-mcp
+spec:
+  description: "GitHub profile — composable tool wrapping GitHub API"
+  title: "GitHub Profile (Composable)"
+  remote:
+    type: streamable-http
+    url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/github-profile
+---
+apiVersion: ar.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: github-remote-mcp
+spec:
+  description: "GitHub — authenticated access via OAuth elicitation"
+  title: "GitHub (Authenticated)"
+  remote:
+    type: streamable-http
+    url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/github-remote

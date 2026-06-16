@@ -1,0 +1,31 @@
+# AgentGateway distributed tracing → Solo Enterprise UI.
+# https://docs.solo.io/agentgateway/latest/observability/tracing/
+#
+# Attaches OTLP tracing to the gateway. Spans are sent to the bundled
+# telemetry collector (deployed by the management chart in the kagent namespace),
+# which writes to ClickHouse and renders in the Solo Enterprise UI Tracing view.
+#
+# Every LLM call and MCP tool call through the gateway becomes a trace.
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: tracing
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - kind: Gateway
+    name: agentgateway-proxy
+    group: gateway.networking.k8s.io
+  frontend:
+    tracing:
+      backendRef:
+        name: solo-enterprise-telemetry-collector   # bundled collector (kagent ns)
+        namespace: kagent
+        kind: Service
+        port: 4317
+      protocol: GRPC
+      randomSampling: "true"    # start a span even when the request has no trace yet
+      clientSampling: "true"    # continue an existing trace
+      resources:
+      - name: service.name
+        expression: '"agentgateway"'

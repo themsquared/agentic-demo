@@ -1,0 +1,57 @@
+# Virtual MCP — federate multiple MCP servers behind ONE gateway endpoint.
+# https://docs.solo.io/agentgateway/latest/mcp/virtual/
+#
+# A single AgentgatewayBackend lists several MCP targets; clients connect once to
+# /mcp/federated and see the tools from ALL of them (tool names are prefixed with
+# the target name). This is AgentGateway's "central tools registry exposed as one
+# virtualized MCP server."
+#
+# Targets here:
+#   - mcp-server-everything : selected by label (Streamable HTTP — required for selectors)
+#   - mcp-website-fetcher   : static target (SSE — selectors don't support SSE, so static)
+#
+# failureMode: FailOpen → if one target is down, the gateway still serves tools
+# from the healthy ones (default is FailClosed, where any unhealthy target fails
+# the whole session).
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: mcp-federated
+  namespace: agentgateway-system
+spec:
+  mcp:
+    failureMode: FailOpen
+    targets:
+    - name: everything
+      selector:
+        services:
+          matchLabels:
+            app: mcp-server-everything
+    - name: website-fetcher
+      static:
+        host: mcp-website-fetcher.agentgateway-system.svc.cluster.local
+        port: 80
+        protocol: SSE
+---
+# One endpoint for the whole federation. Clients/agents point here and get every
+# federated server's tools through a single MCP connection — governed by AGW
+# (auth, policy, telemetry) just like any other route.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mcp-federated
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /mcp/federated
+    backendRefs:
+    - name: mcp-federated
+      namespace: agentgateway-system
+      group: agentgateway.dev
+      kind: AgentgatewayBackend

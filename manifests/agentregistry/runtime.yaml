@@ -1,0 +1,14 @@
+# AgentRegistry Runtime — tells the registry WHERE it can deploy agents.
+# This points at the kagent controller in-cluster. When you deploy a catalog
+# agent to this runtime, AgentRegistry translates its ar.dev resources into
+# kagent's native kagent.dev CRDs.
+apiVersion: ar.dev/v1alpha1
+kind: Runtime
+metadata:
+  name: kagent
+spec:
+  type: Kagent
+  telemetryEndpoint: http://agentregistry-enterprise-telemetry-collector.agentregistry-system.svc.cluster.local:4318
+  config:
+    kagentUrl: http://kagent-controller.kagent:8083
+    namespace: kagent

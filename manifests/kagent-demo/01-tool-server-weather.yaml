@@ -1,0 +1,20 @@
+# Act 1 — Add a TOOL SERVER to kagent.
+#
+# A RemoteMCPServer registers an MCP endpoint with kagent so agents can use its
+# tools. kagent connects, discovers the available tools, and surfaces them in
+# the UI. The URL points at an AgentGateway route, so every tool call this
+# server fronts flows through (and is governed by) the gateway.
+#
+# This is its own object on purpose: tool servers are registered independently
+# of any agent, then referenced by agents (Act 2). Inspect after applying:
+#   kubectl get remotemcpserver kdemo-weather -n kagent -o yaml   # see status.discoveredTools
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: kdemo-weather
+  namespace: kagent
+spec:
+  description: "kagent demo — Weather (composable) tool server via AgentGateway"
+  protocol: STREAMABLE_HTTP
+  url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/weather
+  timeout: 30s

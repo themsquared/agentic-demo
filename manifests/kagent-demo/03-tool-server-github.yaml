@@ -1,0 +1,15 @@
+# Act 2b — Add a SECOND tool server (showing tool servers are incremental).
+#
+# Same idea as Act 1: register another MCP endpoint with kagent. Applying this
+# makes the GitHub-profile tools available to wire into agents — it doesn't
+# touch any agent until an agent references it (04-helpdesk-add-github.yaml).
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: kdemo-github
+  namespace: kagent
+spec:
+  description: "kagent demo — GitHub Profile (composable) tool server via AgentGateway"
+  protocol: STREAMABLE_HTTP
+  url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/github-profile
+  timeout: 30s

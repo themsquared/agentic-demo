@@ -1,0 +1,24 @@
+# Gateway — the actual data-plane proxy. Creating this triggers AgentGateway to
+# spin up the proxy deployment + service (named 'agentgateway-proxy').
+#
+# All LLM and MCP HTTPRoutes attach to this Gateway via parentRefs.
+# infrastructure.parametersRef wires in the STS env from agentgateway-parameters.yaml.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: agentgateway-proxy
+  namespace: agentgateway-system
+spec:
+  gatewayClassName: enterprise-agentgateway
+  infrastructure:
+    parametersRef:
+      group: enterpriseagentgateway.solo.io
+      kind: EnterpriseAgentgatewayParameters
+      name: agw-params
+  listeners:
+  - name: http
+    port: 80
+    protocol: HTTP
+    allowedRoutes:
+      namespaces:
+        from: All

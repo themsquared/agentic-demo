@@ -1,0 +1,17 @@
+# AFTER promotion (Act 6, step 3): same catalog entry (everything-mcp), but the
+# URL now points at the AgentGateway federated endpoint instead of the raw service.
+#
+# Applying this over everything-mcp-direct.yaml is the "promotion" — one field
+# changes, and the server goes from ungoverned to fully governed: mTLS in the
+# mesh, AGW auth/policy/telemetry, and federation with the other MCP servers
+# behind /mcp/federated (see ../mcp-servers/virtual-mcp.yaml).
+apiVersion: ar.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: everything-mcp
+spec:
+  title: "Everything Tools (via gateway)"
+  description: "Reference MCP server — promoted onto AgentGateway and federated behind /mcp/federated."
+  remote:
+    type: streamable-http
+    url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local/mcp/federated   # ← now governed by AGW
