@@ -74,11 +74,15 @@ ar_apply_file() { local f=$1; local rel="manifests/${f#"${MANIFESTS}"/}"
   echo -e "  ${YELLOW}\$ arctl apply -f ${rel}   ${DIM}(via in-cluster helper)${NC}"
   kubectl exec -i deploy/arctl-helper -n "${AR_NS}" -- arctl-apply < "$f" 2>&1 | sed 's/^/    /'; }
 
-# Wait for a kagent agent's Deployment to be ready.
+# Wait for a kagent agent's Deployment to be ready. Waits on both the rollout AND
+# the pod's Ready condition — `rollout status` can return a beat before the new
+# pod passes its readiness probe, and an A2A call in that gap gets a connection
+# reset. The extra pod-Ready wait closes that race for unattended runs.
 wait_agent() {
   local name=$1 timeout=${2:-150}
   narrate "waiting for agent '${name}' to be ready (≤${timeout}s)..."
   kubectl rollout status "deploy/${name}" -n "${KAGENT_NS}" --timeout="${timeout}s" 2>&1 | tail -1 | sed 's/^/    /' || true
+  kubectl wait --for=condition=Ready pod -l "kagent=${name}" -n "${KAGENT_NS}" --timeout=60s >/dev/null 2>&1 || true
 }
 
 # Chat with a DECLARATIVE agent over A2A from the in-cluster helper (works because
