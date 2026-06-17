@@ -43,7 +43,9 @@ engineer — not what you click through live.
    ```bash
    echo "127.0.0.1 keycloak.keycloak.svc.cluster.local" | sudo tee -a /etc/hosts
    ```
-4. **Licensing repo** cloned at `~/licensing` (setup generates trial licenses from it).
+4. **Solo licenses** — set `SOLO_LICENSE_KEY` (or the three per-product keys) in `.env`,
+   *or* (Solo employees) clone `solo-io/licensing` at `~/licensing` and setup generates them,
+   *or* paste each when setup prompts. See README → Prerequisites.
 
 ## 2. Stand it up (~15 min, do this before the audience arrives)
 

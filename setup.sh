@@ -14,7 +14,14 @@
 #   - Demo agents wired through AgentGateway (LLM + MCP + OBO/elicitation)
 #
 # Prerequisites:
-#   - k3d, kubectl, helm, go (1.24+)
+#   - k3d, kubectl, helm
+#   - go (1.24+) — ONLY to generate licenses from the solo-io/licensing repo
+#     (Solo employees). Not needed if you provide license strings (see below).
+#   - Solo licenses — one of:
+#       * SOLO_LICENSE_KEY (a single trial license covering all products), or
+#       * AGENTGATEWAY_LICENSE_KEY / SOLO_ISTIO_LICENSE_KEY / KAGENT_LICENSE_KEY, or
+#       * the solo-io/licensing repo at ~/licensing (auto-generated), or
+#       * paste them when prompted.
 #   - Environment variables (or will be prompted):
 #       ANTHROPIC_API_KEY, OPENAI_API_KEY
 #       GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET  (from a GitHub OAuth App)
@@ -98,10 +105,13 @@ wait_for_deployment() {
 ###############################################################################
 header "Preflight Checks"
 
-for cmd in k3d kubectl helm go; do
+for cmd in k3d kubectl helm; do
   command -v "$cmd" >/dev/null 2>&1 || { err "$cmd is required but not found"; exit 1; }
   ok "$cmd found"
 done
+# go is required ONLY to generate licenses from the solo-io/licensing repo
+# (Solo employees). Anyone else provides license strings via .env or the prompt
+# in Step 1, and doesn't need go — so it's checked there, not here.
 
 # Prompt for required env vars
 prompt_var() {
@@ -126,21 +136,35 @@ prompt_var GITHUB_CLIENT_ID    "Enter your GitHub OAuth App Client ID"
 prompt_var GITHUB_CLIENT_SECRET "Enter your GitHub OAuth App Client Secret" true
 
 ###############################################################################
-# Step 1 — Generate Solo license keys
+# Step 1 — Solo license keys
+#
+# Three licenses are needed (AgentGateway, Istio/Mesh, kagent/AgentRegistry).
+# Each is resolved from the first available source, in priority order:
+#
+#   1. PROVIDED   — the matching env var (set directly or in .env):
+#                     AGENTGATEWAY_LICENSE_KEY, SOLO_ISTIO_LICENSE_KEY, KAGENT_LICENSE_KEY
+#                   ...or SOLO_LICENSE_KEY as a single value that backfills any unset
+#                   one (a trial license commonly covers all products).
+#   2. GENERATED  — from the solo-io/licensing repo at ${LICENSING_REPO} (Solo
+#                   employees only). Requires `go`.
+#   3. PROMPTED   — paste the JWT when asked. The fallback for anyone without
+#                   the repo (e.g. a customer/prospect emailed trial licenses).
+#
+# So a non-Solo user just sets the keys in .env (or pastes them) and never needs
+# the licensing repo or go.
 ###############################################################################
-header "Step 1: Generate Solo License Keys"
+header "Step 1: Solo License Keys"
 
-if [ ! -d "${LICENSING_REPO}/tools" ]; then
-  err "Licensing repo not found at ${LICENSING_REPO}. Clone it first:"
-  err "  gh repo clone solo-io/licensing ${LICENSING_REPO}"
-  exit 1
-fi
+HAVE_LICENSING_REPO=false
+[ -d "${LICENSING_REPO}/tools" ] && HAVE_LICENSING_REPO=true
+
+# Single license that covers all products; backfills any per-product var left unset.
+SOLO_LICENSE_KEY="${SOLO_LICENSE_KEY:-}"
 
 # genlicense prints a label line ("Encrypted license string:") followed by the
 # JWT on the next line, then decoded metadata. Extract just the JWT token (it
-# always starts with "eyJ") rather than relying on line position. Fail fast if
-# nothing was captured, so we never hand a bogus key to a helm install.
-gen_license() {  # usage: gen_license <product>
+# always starts with "eyJ") rather than relying on line position.
+gen_license() {  # usage: gen_license <product>  (only called when the repo is present)
   local product=$1 key
   key=$(cd "${LICENSING_REPO}/tools" \
         && go run cmd/genlicense/main.go --enterprise --product "${product}" --days 90 2>/dev/null \
@@ -153,20 +177,40 @@ gen_license() {  # usage: gen_license <product>
   printf '%s' "${key}"
 }
 
-info "Generating AgentGateway enterprise license (90 days)..."
-AGENTGATEWAY_LICENSE_KEY=$(gen_license agentgateway)
-export AGENTGATEWAY_LICENSE_KEY
-ok "AgentGateway license generated"
+# resolve_license <product> <VAR_NAME> <label>
+resolve_license() {
+  local product=$1 var=$2 label=$3
+  # 1a. explicit per-product value (env/.env)
+  if [ -n "${!var:-}" ]; then export "${var}"; ok "${label} license: using provided ${var}"; return; fi
+  # 1b. single SOLO_LICENSE_KEY backfill
+  if [ -n "${SOLO_LICENSE_KEY}" ]; then printf -v "${var}" '%s' "${SOLO_LICENSE_KEY}"; export "${var}"; ok "${label} license: using SOLO_LICENSE_KEY"; return; fi
+  # 2. generate from the licensing repo (Solo employees)
+  if [ "${HAVE_LICENSING_REPO}" = true ]; then
+    command -v go >/dev/null 2>&1 || { err "go is required to generate licenses from ${LICENSING_REPO}. Install go, or set ${var} / SOLO_LICENSE_KEY in .env."; exit 1; }
+    local key; key=$(gen_license "${product}"); printf -v "${var}" '%s' "${key}"; export "${var}"
+    ok "${label} license generated (90 days)"
+    return
+  fi
+  # 3. prompt (paste the JWT)
+  echo ""
+  echo -en "${YELLOW}[INPUT]${NC} Paste your ${label} license JWT (starts with eyJ): "
+  read -r "${var}"; export "${var}"
+  [ -n "${!var:-}" ] || { err "${label} license is required — set ${var} or SOLO_LICENSE_KEY in .env, or paste it when prompted."; exit 1; }
+  ok "${label} license set"
+}
 
-info "Generating Istio/Mesh enterprise license (90 days)..."
-SOLO_ISTIO_LICENSE_KEY=$(gen_license gloo-mesh)
-export SOLO_ISTIO_LICENSE_KEY
-ok "Istio/Mesh license generated"
+if [ "${HAVE_LICENSING_REPO}" = false ] \
+   && [ -z "${SOLO_LICENSE_KEY}" ] \
+   && [ -z "${AGENTGATEWAY_LICENSE_KEY:-}${SOLO_ISTIO_LICENSE_KEY:-}${KAGENT_LICENSE_KEY:-}" ]; then
+  warn "No licensing repo at ${LICENSING_REPO} and no license env vars set."
+  info "Not a Solo employee? Set SOLO_LICENSE_KEY (or the three per-product keys)"
+  info "in .env, or paste each license when prompted below. Trial licenses from"
+  info "Solo typically cover all three products."
+fi
 
-info "Generating kagent/AgentRegistry license (90 days, gloo-trial unlocks all products)..."
-KAGENT_LICENSE_KEY=$(gen_license gloo-trial)
-export KAGENT_LICENSE_KEY
-ok "kagent license generated"
+resolve_license agentgateway AGENTGATEWAY_LICENSE_KEY "AgentGateway"
+resolve_license gloo-mesh    SOLO_ISTIO_LICENSE_KEY   "Istio/Mesh"
+resolve_license gloo-trial   KAGENT_LICENSE_KEY       "kagent/AgentRegistry"
 
 ###############################################################################
 # Step 2 — Create k3d cluster

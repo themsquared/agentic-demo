@@ -28,8 +28,13 @@ flows through AgentGateway, with **distributed tracing** on every call
 
 ## Prerequisites
 
-- `k3d`, `kubectl`, `helm`, `go` (1.24+), `jq`, `openssl`
-- The `solo-io/licensing` repo cloned at `~/licensing` (licenses are auto-generated)
+- `k3d`, `kubectl`, `helm`, `jq`, `openssl`
+- **Solo licenses** — one of:
+  - `SOLO_LICENSE_KEY` in `.env` (a single trial license usually covers all products), or
+    the per-product keys `AGENTGATEWAY_LICENSE_KEY` / `SOLO_ISTIO_LICENSE_KEY` / `KAGENT_LICENSE_KEY`; or
+  - *(Solo employees)* the `solo-io/licensing` repo cloned at `~/licensing` — setup auto-generates
+    them (this path also needs `go` 1.24+); or
+  - nothing set — setup will **prompt** you to paste each license.
 - A GitHub OAuth App (callback URL `http://localhost:9090/age/elicitations`)
 - Secrets in `.env` (preferred — set once) or exported env vars (or you'll be prompted):
   - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`
