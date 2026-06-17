@@ -93,6 +93,53 @@ mesh, and still routing LLM + tools through the gateway.
 
 ---
 
+## Naming gotcha: the runtime agent is named after the *catalog Agent*, not the *Deployment*
+
+This trips people up (it's counter-intuitive). When AgentRegistry promotes to
+kagent, the resulting `kagent.dev/Agent` takes its name from the **`targetRef`
+agent** (its `remoteName`), **not** from the `Deployment`'s `metadata.name`.
+Consequences:
+
+- One catalog `Agent` + two `Deployment`s = **one** kagent agent, deployed twice.
+  A `Deployment` named `weatherwise-v2` that targets the `weatherwise` agent still
+  shows up in kagent as **`weatherwise`** (the AR UI even labels it *Agent Name:
+  weatherwise*). There is no per-deployment instance name — `runtimeConfig` name
+  fields are silently ignored (verified on AR 2026.5.4).
+- Because the deployments share one runtime agent, **deleting *any* of them
+  removes the shared kagent agent** (the others keep a stale deployment record).
+
+**To get N distinct agents in kagent, create N catalog `Agent`s.** The *image* is
+the reusable template; the *catalog Agent* is the named instance. They can all
+reference the same image:
+
+```bash
+# weatherwise-v2 as its own agent (reuses the weatherwise image) → appears in kagent as "weatherwise-v2"
+kubectl exec -i deploy/arctl-helper -n agentregistry-system -- arctl-apply <<'YAML'
+apiVersion: ar.dev/v1alpha1
+kind: Agent
+metadata: { name: weatherwise-v2 }
+spec:
+  description: "WeatherWise v2"
+  language: python
+  framework: adk
+  modelProvider: anthropic
+  modelName: claude-sonnet-4-6
+  source: { image: solo-demo/weatherwise:latest }
+  mcpServers: [ { kind: MCPServer, name: weather-mcp } ]
+YAML
+kubectl exec -i deploy/arctl-helper -n agentregistry-system -- arctl-apply <<'YAML'
+apiVersion: ar.dev/v1alpha1
+kind: Deployment
+metadata: { name: weatherwise-v2-kagent }
+spec:
+  targetRef:  { kind: Agent,   name: weatherwise-v2 }   # ← target the v2 AGENT
+  runtimeRef: { kind: Runtime, name: kagent }
+YAML
+kubectl get agents.kagent.dev -n kagent   # weatherwise AND weatherwise-v2, both BYO/Ready
+```
+
+---
+
 ## Why the `istiod` alias matters (operator note)
 
 Promoted (BYO) agents get an ambient **waypoint**. Solo's istiod is named
@@ -109,4 +156,5 @@ Declarative agents have no waypoint, so this only surfaces after Act 3.
 | Act 3: "Packaged image not found" | Docker was unavailable at `setup.sh`. Build + import manually: `docker build -t solo-demo/weatherwise:latest agents-src/weatherwise && k3d image import solo-demo/weatherwise:latest -c ai-demo` |
 | Promoted agent READY but UI chat hangs/resets | Waypoint can't get a cert — confirm `kubectl get svc istiod -n istio-system` exists (apply `manifests/infrastructure/istiod-alias.yaml`), then `kubectl rollout restart deploy -n kagent -l gateway.networking.k8s.io/gateway-name` |
 | Agents page crashes after adding a tool | A tool ref lost its non-empty `toolNames` — re-apply the manifest (see `manifests/README.md` gotchas) |
+| Deployed to kagent but it's not in the kagent UI (or shows a different name) | The kagent agent is named after the **catalog Agent**, not the Deployment — see "Naming gotcha" above. Make a separate catalog `Agent` to get a separately-named runtime agent. |
 | Clean slate | `./kagent-demo.sh --reset` (removes helpdesk, the kdemo tool servers, and the weatherwise promotion; leaves infra + main-demo agents + the imported image) |
