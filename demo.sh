@@ -628,6 +628,68 @@ apply_file "${MANIFESTS}/kagent/agents/github-assistant.yaml"
 check_ok "github-assistant deployed"
 pause
 
+# ── 4.5b One-time GitHub consent (the elicitation flow this agent needs) ────
+# Without this, the very first chat with github-assistant hard-fails:
+# google-adk's MCPToolset throws "Failed to create MCP session: ... TaskGroup
+# (1 sub-exception)" because the gateway responds to the agent's MCP init with
+# an elicitation-pending error rather than a normal session. The ADK has no
+# affordance to surface that URL to the user — so we drive it here, BEFORE the
+# user chats. Note the STS lives in-pod (SQLite), so a fresh setup.sh / AGW
+# restart always wipes stored tokens and this consent needs to be redone.
+scene "One-time GitHub Consent (so github-assistant can act as YOU)"
+narrate "github-assistant uses the GitHub Remote MCP via the gateway's OBO flow."
+narrate "The gateway holds a per-user GitHub token in its STS. The token lives in"
+narrate "in-pod SQLite, so a fresh AGW pod has no tokens — every cluster rebuild"
+narrate "needs ONE consent click. We'll trigger and complete it here, before chat."
+narrate ""
+narrate "Fetch the demo user's Keycloak token and probe /mcp/github-remote — this"
+narrate "creates the pending consent record the UI will surface."
+echo ""
+# Get a real Keycloak token for the demo user (same password grant used elsewhere).
+GH_DEMO_TOKEN=$(curl -s -X POST \
+  "http://keycloak.${KC_NS}.svc.cluster.local:8080/realms/agentgateway/protocol/openid-connect/token" \
+  -d grant_type=password -d client_id=ar-cli-password \
+  -d username=demo -d password=demo -d scope=openid 2>/dev/null | jq -r .access_token)
+if [ -z "$GH_DEMO_TOKEN" ] || [ "$GH_DEMO_TOKEN" = "null" ]; then
+  check_fail "Couldn't reach Keycloak from host — is the /etc/hosts entry set? Skip; do consent manually at http://localhost:9090/age/elicitations later."
+else
+  # Probe the gateway: this triggers the elicitation AND tells us if a token is already stored.
+  GH_PROBE=$(curl -s --max-time 10 "${AGW_PROXY}/mcp/github-remote" \
+    -H "Authorization: Bearer ${GH_DEMO_TOKEN}" \
+    -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"consent-probe","version":"1"}}}' 2>/dev/null)
+  if echo "$GH_PROBE" | grep -q '"result"'; then
+    check_ok "STS already has a token for demo — chat will work without re-consent."
+  elif echo "$GH_PROBE" | grep -q 'token not available in STS'; then
+    check_ok "Pending consent created at the gateway."
+    echo ""
+    echo -e "  ${BOLD}Open this URL, sign in (demo / demo), and click Authorize:${NC}"
+    echo -e "    ${GREEN}http://localhost:9090/age/elicitations${NC}"
+    echo ""
+    narrate "GitHub will show a real consent screen for your OAuth App. Approving"
+    narrate "stores the GitHub token in the gateway STS keyed by your Keycloak user."
+    ui_moment "Authorize the pending consent, then come back."
+    # Verify they did it — re-probe; expect a real MCP initialize response now.
+    GH_VERIFY=$(curl -s --max-time 10 "${AGW_PROXY}/mcp/github-remote" \
+      -H "Authorization: Bearer ${GH_DEMO_TOKEN}" \
+      -H 'content-type: application/json' \
+      -H 'accept: application/json, text/event-stream' \
+      -d '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}' 2>/dev/null)
+    if echo "$GH_VERIFY" | grep -q '"result"'; then
+      check_ok "STS now has your GitHub token — github-assistant chat will work."
+    else
+      check_fail "STS still has no token. Was the consent completed? You can retry"
+      check_fail "by opening http://localhost:9090/age/elicitations again; chat with"
+      check_fail "github-assistant will fail with 'Failed to create MCP session' until done."
+    fi
+  else
+    check_fail "Unexpected probe response. The chat may or may not work. Raw:"
+    echo "$GH_PROBE" | head -c 400 | sed 's/^/    /'; echo
+  fi
+fi
+pause
+
 # ── 4.6 Orchestrator ─────────────────────────────────────────────────────────
 scene "Deploy Agent: Orchestrator (A2A Multi-Agent)"
 narrate "The finale agent. It doesn't call tools directly — it delegates to the"
@@ -652,12 +714,16 @@ echo -e "  ${CYAN}weather-assistant:${NC}"
 echo '    "What is the weather in Cambridge right now?"'
 echo -e "  ${CYAN}research-agent:${NC}"
 echo '    "Look up the solo-io GitHub org and summarize their recent work."'
+echo -e "  ${CYAN}github-assistant:${NC}    ${DIM}(needs the consent done in §4.5b)${NC}"
+echo '    "Who am I on GitHub?"'
 echo -e "  ${CYAN}orchestrator-agent:${NC}"
 echo '    "What is the weather in San Francisco, and what has solo-io'
 echo '     been working on recently on GitHub?"'
 echo ""
 callout "The orchestrator delegates to weather-assistant AND research-agent."
 callout "Watch GPT-4o orchestrate Claude Sonnet 4 specialists!"
+callout "github-assistant answers as YOU — same Keycloak identity → gateway STS"
+callout "→ stored GitHub OAuth token → call as that user."
 ui_moment "Open the UI, test the agents, then come back for the final act."
 fi # end ACT 4
 
