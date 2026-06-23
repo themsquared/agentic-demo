@@ -1,0 +1,187 @@
+# Act 7 / Scene 1 — Eager Auth: the gateway checks the API key BEFORE the request
+# reaches any backend or upstream LLM. If the key is missing or wrong, you get
+# 401 at the gateway — no Anthropic API call, no token spend, no log noise.
+#
+# Three pieces:
+#   1. HTTPRoute /secure-anthropic — a separate route backed by the existing
+#      Anthropic backend, so the rest of the demo's /anthropic route is untouched.
+#   2. Secret eager-auth-keys (data key: api-key) — the valid token(s).
+#   3. EnterpriseAgentgatewayPolicy with traffic.apiKeyAuthentication, attached
+#      to the HTTPRoute. The gateway extracts the token from Authorization: Bearer
+#      and validates it against the Secret before routing to the backend.
+#
+# About `traffic.phase`:
+#   - PreRouting:  fires at the LISTENER, before any route is selected. Can only
+#                  attach to Gateway/ListenerSet/Service — gates EVERY route on
+#                  that gateway, the "true eager" mode for a single-tenant edge.
+#   - PostRouting (default): fires AFTER routing, scoped to the targeted route.
+#                  Pick this when only some routes need auth (most real usage).
+# We use PostRouting here so the demo's other routes (/anthropic, /openai, /mcp/*)
+# stay open — the customer story is "the gateway enforces auth before the upstream
+# is touched", which is true for both phases.
+#
+# Verify (after apply):
+#   curl -i  localhost:8081/secure-anthropic/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
+#   # → HTTP/1.1 401 Unauthorized
+#
+#   curl -s localhost:8081/secure-anthropic/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -H 'Authorization: Bearer demo-secret-key' \
+#     -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}' \
+#     | jq -r '.choices[0].message.content'
+#   # → "Hi there..."  (gateway validated key, then forwarded to Anthropic)
+#
+# For production: swap apiKeyAuthentication for traffic.jwtAuthentication and
+# point providers[] at your OIDC issuer (this is what Keycloak elicitation already
+# uses for OBO — see manifests/security/).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: secure-anthropic
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /secure-anthropic
+    filters:
+    # Upstream sees /v1/chat/completions, not /secure-anthropic/v1/chat/completions
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    # Strip browser CORS headers (matches the /anthropic route's pattern)
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        remove: [Origin, Referer]
+    backendRefs:
+    - name: anthropic
+      namespace: agentgateway-system
+      group: agentgateway.dev
+      kind: AgentgatewayBackend
+---
+# Secret carrying the valid API key. The data key MUST be `api-key` —
+# apiKeyAuthentication.secretRef reads that key by convention.
+# In a real setup this would be created imperatively from a CI vault, never
+# committed; we use a literal demo value here so the scene is self-contained.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: eager-auth-keys
+  namespace: agentgateway-system
+type: Opaque
+stringData:
+  api-key: demo-secret-key
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: eager-auth-apikey
+  namespace: agentgateway-system
+spec:
+  # Attaches to the route; the check fires before the backend is contacted.
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: secure-anthropic
+  traffic:
+    phase: PostRouting        # see header comment for PreRouting vs PostRouting
+    apiKeyAuthentication:
+      mode: Strict            # Strict = require + validate. Optional = validate-if-present.
+      location:
+        header:
+          name: Authorization
+          prefix: "Bearer "   # strip "Bearer " before comparing against the secret value
+      secretRef:
+        name: eager-auth-keys
+---
+# ─── Variant B: Real JWT validation against Keycloak (production-style) ───────
+# Same idea as the apiKey route above, but the gateway validates a real OIDC
+# token: it fetches Keycloak's JWKS, verifies the JWT signature, and checks the
+# `iss` claim — all before the backend is contacted. Use the password grant
+# already used for the elicitation/OBO flow to get a token:
+#
+#   TOKEN=$(curl -s -X POST \
+#     http://keycloak.keycloak.svc.cluster.local:8080/realms/agentgateway/protocol/openid-connect/token \
+#     -d grant_type=password -d client_id=ar-cli-password \
+#     -d username=demo -d password=demo -d scope=openid | jq -r .access_token)
+#
+#   # forged/garbage JWT → 401 (signature fails)
+#   curl -i  localhost:8081/secure-anthropic-jwt/v1/chat/completions \
+#     -H "Authorization: Bearer not.a.jwt" -H 'content-type: application/json' \
+#     -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
+#
+#   # real Keycloak token → 200, agent now knows WHO is calling
+#   curl -s localhost:8081/secure-anthropic-jwt/v1/chat/completions \
+#     -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+#     -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}' \
+#     | jq -r '.choices[0].message.content'
+#
+# Note: cacheDuration defaults to 5m (and must be ≥5m) — the gateway caches JWKS
+# fetches, so revoking a JWT key takes up to 5 minutes to propagate to live policies.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: secure-anthropic-jwt
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /secure-anthropic-jwt
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        remove: [Origin, Referer]
+    backendRefs:
+    - name: anthropic
+      namespace: agentgateway-system
+      group: agentgateway.dev
+      kind: AgentgatewayBackend
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: eager-auth-jwt
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: secure-anthropic-jwt
+  traffic:
+    phase: PostRouting
+    jwtAuthentication:
+      mode: Strict
+      location:
+        header:
+          name: Authorization
+          prefix: "Bearer "
+      providers:
+      # Keycloak (the same OIDC issuer the OBO/elicitation flow already trusts).
+      # `audiences` omitted — Keycloak password-grant tokens carry no `aud` claim
+      # by default; with audiences set, validation would always fail.
+      - issuer: http://keycloak.keycloak.svc.cluster.local:8080/realms/agentgateway
+        jwks:
+          remote:
+            backendRef:
+              name: keycloak
+              namespace: keycloak
+              port: 8080
+            jwksPath: /realms/agentgateway/protocol/openid-connect/certs

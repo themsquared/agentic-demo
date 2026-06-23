@@ -1,0 +1,90 @@
+# Act 7 / Scene 4 — Code Mode: the LLM writes CODE instead of issuing N tool_use
+# round-trips.
+#
+# With the default toolMode (Standard), an LLM that needs to compose multiple
+# tool calls — fetch weather for 3 cities, filter by temperature, return the
+# coldest — does it as N+1 LLM round-trips: each call goes back through the LLM
+# for the next decision. Each round-trip = latency + tokens.
+#
+# In Code Mode, the gateway exposes a single tool called `executor.runScript`
+# (or similar — name depends on the gateway version). The LLM writes a small
+# JavaScript snippet that calls the underlying MCP tools as in-process functions,
+# the gateway runs the script in a sandbox (cpu/wall timeouts), and only the
+# FINAL result returns to the LLM. N tool calls → 1 turn.
+#
+# Two knobs:
+#   - toolMode:  Standard (default) | Code | Search | CodeSearch
+#   - codeMode:  { timeout, cpuTimeout }   — sandbox limits
+#
+# This manifest wraps the existing OpenAPI weather MCP from Scene 3 as a SECOND
+# entMcp backend with Code Mode enabled, exposed on /mcp/openapi-weather-code.
+# Scene 3's /mcp/openapi-weather route stays put, so you can A/B them in MCP
+# Inspector — one shows `get_current_weather`, the other shows a `code`/script
+# tool that runs the same underlying ops.
+#
+# Verify (after apply):
+#
+#   # Connect MCP Inspector → Streamable HTTP → http://localhost:8081/mcp/openapi-weather-code
+#   # The Tools tab shows ONE tool (the script executor) instead of one per OpenAPI op.
+#
+#   # Quick CLI probe:
+#   INIT=$(curl -s -i localhost:8081/mcp/openapi-weather-code \
+#     -H 'content-type: application/json' \
+#     -H 'accept: application/json, text/event-stream' \
+#     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+#         "protocolVersion":"2024-11-05","capabilities":{},
+#         "clientInfo":{"name":"probe","version":"1"}}}')
+#   SID=$(echo "$INIT" | grep -i 'mcp-session-id:' | awk '{print $2}' | tr -d '\r')
+#   curl -s localhost:8081/mcp/openapi-weather-code -H "mcp-session-id: $SID" \
+#     -H 'content-type: application/json' \
+#     -H 'accept: application/json, text/event-stream' \
+#     -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayBackend
+metadata:
+  name: openapi-weather-mcp-code
+  namespace: agentgateway-system
+spec:
+  entMcp:
+    # toolMode tells the MCP server how to expose its tools to the client:
+    #   Standard   — one MCP tool per underlying operation (Scene 3 default)
+    #   Code       — a single script-executor tool; the LLM writes JS to drive ops
+    #   Search     — a search-over-tools interface (large tool catalogs)
+    #   CodeSearch — combine both
+    toolMode: Code
+    # Sandbox limits for the script engine.
+    codeMode:
+      timeout:    30s    # wall-clock cap per script execution
+      cpuTimeout: 5s     # CPU-time cap (prevents pathological loops)
+    targets:
+    - name: open-meteo
+      static:
+        host: api.open-meteo.com
+        port: 443
+        protocol: OpenAPI
+        openAPI:
+          schemaRef:
+            name: mcp-openapi-weather-spec   # reuse Scene 3's ConfigMap
+        policies:
+          tls:
+            sni: api.open-meteo.com
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openapi-weather-mcp-code-route
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /mcp/openapi-weather-code
+    backendRefs:
+    - name: openapi-weather-mcp-code
+      namespace: agentgateway-system
+      group: enterpriseagentgateway.solo.io
+      kind: EnterpriseAgentgatewayBackend

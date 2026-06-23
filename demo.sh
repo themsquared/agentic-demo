@@ -197,6 +197,14 @@ reset_demo() {
   kubectl delete deployment mcp-website-fetcher mcp-server-everything -n "${AGW_NS}" 2>/dev/null || true
   kubectl delete service mcp-website-fetcher mcp-server-everything -n "${AGW_NS}" 2>/dev/null || true
 
+  # Act 7 (Advanced AgentGateway) resources — clean by name so we don't touch
+  # infra policies. Safe if any are absent (||true).
+  kubectl delete httproute secure-anthropic secure-anthropic-jwt openapi-weather-mcp-route openapi-weather-mcp-code-route -n "${AGW_NS}" 2>/dev/null || true
+  kubectl delete eagpol  eager-auth-apikey eager-auth-jwt anthropic-prompt-policies -n "${AGW_NS}" 2>/dev/null || true
+  kubectl delete eagbe   openapi-weather-mcp openapi-weather-mcp-code -n "${AGW_NS}" 2>/dev/null || true
+  kubectl delete secret  eager-auth-keys -n "${AGW_NS}" 2>/dev/null || true
+  kubectl delete configmap mcp-openapi-weather-spec -n "${AGW_NS}" 2>/dev/null || true
+
   # AgentRegistry catalog objects are NOT k8s resources — delete via arctl helper
   # if it's present (best-effort; demo re-applies are idempotent upserts anyway).
   if kubectl get deploy arctl-helper -n "${AR_NS}" >/dev/null 2>&1; then
@@ -232,14 +240,14 @@ preflight() {
 # Parse args
 ###############################################################################
 # END_ACT controls how far into the demo we play. With no --act flag we run all
-# six acts. With --act N we reset, then play acts 1..N (so act N has the state
+# seven acts. With --act N we reset, then play acts 1..N (so act N has the state
 # it expects — agents need LLMs, AR needs agents, etc.) and stop after N.
-END_ACT=6
+END_ACT=7
 for arg in "$@"; do
   case "$arg" in
     --reset) reset_demo; exit 0 ;;
-    --act)   shift; END_ACT=${1:-6} ;;
-    [1-6])   END_ACT=$arg ;;
+    --act)   shift; END_ACT=${1:-7} ;;
+    [1-7])   END_ACT=$arg ;;
   esac
 done
 
@@ -785,6 +793,208 @@ pause
 fi # end ACT 6
 
 ###############################################################################
+#
+#  ACT 7 — Advanced AgentGateway: Eager Auth, Prompt Policies, OpenAPI→MCP, Code Mode
+#
+###############################################################################
+if [ "$END_ACT" -ge 7 ]; then
+act 7 "Advanced AgentGateway — Eager Auth, Prompt Policies, OpenAPI→MCP, Code Mode"
+
+narrate "Four power-user capabilities that turn the gateway from 'a place"
+narrate "requests pass through' into 'a place requests are GOVERNED'."
+narrate ""
+narrate "  1. Eager Auth          — reject unauth'd requests at the gateway"
+narrate "                            (API-key, then real OIDC/Keycloak JWT)"
+narrate "  2. Prompt Policies     — mask PII, inject system prompts, enforce"
+narrate "                            defaults on every LLM request"
+narrate "  3. OpenAPI → MCP       — turn any REST API into MCP tools with zero code"
+narrate "  4. Code Mode           — replace N tool round-trips with one script"
+pause
+
+# ── 7.1 Eager Auth — apiKey then JWT ──────────────────────────────────────────
+scene "Eager Auth: reject unauth'd requests at the gateway"
+narrate "We add a SECOND Anthropic route /secure-anthropic and put an API-key"
+narrate "policy on it. Other routes (/anthropic, /openai) stay open — the policy"
+narrate "is scoped to its targetRef."
+show_file "${MANIFESTS}/agw-advanced/01-eager-auth.yaml"
+pause
+apply_file "${MANIFESTS}/agw-advanced/01-eager-auth.yaml"
+check_ok "Two secured routes + apiKey policy + JWT (Keycloak) policy applied"
+sleep 4
+pause
+
+scene "Test apiKey: 401 without, 401 wrong, 200 right"
+echo ""
+show_curl "curl -i localhost:8081/secure-anthropic/v1/chat/completions" \
+  "-H 'content-type: application/json'" \
+  "-d '{\"model\":\"claude-sonnet-4-6\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
+pause
+printf "  no token:           HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' localhost:8081/secure-anthropic/v1/chat/completions -H 'content-type: application/json' -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}')"
+printf "  wrong token:        HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' localhost:8081/secure-anthropic/v1/chat/completions -H 'content-type: application/json' -H 'Authorization: Bearer wrong' -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}')"
+printf "  right token:        HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' localhost:8081/secure-anthropic/v1/chat/completions -H 'content-type: application/json' -H 'Authorization: Bearer demo-secret-key' -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}')"
+printf "  /anthropic (no policy, unaffected): HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' localhost:8081/anthropic/v1/chat/completions -H 'content-type: application/json' -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}')"
+callout "401 returned at the gateway — no Anthropic call, no token spend, no log."
+pause
+
+scene "Same idea, real OIDC — gateway validates Keycloak JWTs against the JWKS"
+narrate "Fetch a real token from Keycloak (password grant, same as elicitation):"
+echo ""
+echo -e "  ${YELLOW}\$ TOKEN=\$(curl -s -X POST \\${NC}"
+echo -e "  ${YELLOW}    http://keycloak.keycloak.svc.cluster.local:8080/realms/agentgateway/protocol/openid-connect/token \\${NC}"
+echo -e "  ${YELLOW}    -d grant_type=password -d client_id=ar-cli-password \\${NC}"
+echo -e "  ${YELLOW}    -d username=demo -d password=demo -d scope=openid | jq -r .access_token)${NC}"
+echo ""
+TOKEN=$(curl -s -X POST "http://keycloak.keycloak.svc.cluster.local:8080/realms/agentgateway/protocol/openid-connect/token" -d grant_type=password -d client_id=ar-cli-password -d username=demo -d password=demo -d scope=openid 2>/dev/null | jq -r .access_token)
+if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+  check_fail "Keycloak unreachable from host — /etc/hosts entry missing? Skipping JWT test."
+else
+  check_ok "Got Keycloak token (${#TOKEN} chars)"
+  printf "  bogus 'not.a.jwt': HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' localhost:8081/secure-anthropic-jwt/v1/chat/completions -H 'content-type: application/json' -H 'Authorization: Bearer not.a.jwt' -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}')"
+  printf "  real Keycloak JWT: HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' localhost:8081/secure-anthropic-jwt/v1/chat/completions -H 'content-type: application/json' -H "Authorization: Bearer $TOKEN" -d '{"model":"claude-sonnet-4-6","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}')"
+  callout "Forged JWT → 401 (sig fails). Real Keycloak JWT → 200. Gateway never let"
+  callout "the forged request reach Anthropic."
+fi
+pause
+
+# ── 7.2 Prompt policies — guard + enrich + defaults ───────────────────────────
+scene "Prompt Policies: mask PII, inject persona, enforce defaults"
+narrate "One policy attaches THREE knobs to the Anthropic backend:"
+narrate "  • promptGuard  — regex mask (built-in CC/SSN + custom patterns)"
+narrate "  • prompt.prepend — inject a system message on every request"
+narrate "  • defaults     — set max_tokens when caller omits it"
+show_file "${MANIFESTS}/agw-advanced/02-prompt-policies.yaml"
+pause
+apply_file "${MANIFESTS}/agw-advanced/02-prompt-policies.yaml"
+check_ok "Policy attached to AgentgatewayBackend anthropic"
+sleep 3
+pause
+
+scene "Verify: enrichment — model now identifies as 'Acme Concierge'"
+show_curl "curl -s localhost:8081/anthropic/v1/chat/completions" \
+  "-H 'content-type: application/json'" \
+  "-d '{\"model\":\"claude-sonnet-4-6\",\"max_tokens\":60,\"messages\":[{\"role\":\"user\",\"content\":\"In one sentence, who are you?\"}]}'"
+pause
+curl -s --max-time 25 localhost:8081/anthropic/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":60,"messages":[{"role":"user","content":"In one sentence, who are you?"}]}' \
+  | jq -r '.choices[0].message.content // .error.message // .error // "no response"' | sed 's/^/  reply: /'
+callout "The prepended system message takes effect — same gateway, every request."
+pause
+
+scene "Verify: guard — custom pattern masked BEFORE the model sees it"
+narrate "Send a token matching SECRET-[A-Z0-9]{6}. The gateway replaces it with"
+narrate "'<masked>' before the request reaches Anthropic — the model's reply"
+narrate "describes seeing '<masked>', which is only possible if the redaction"
+narrate "happened gateway-side."
+show_curl "curl -s localhost:8081/anthropic/v1/chat/completions" \
+  "-H 'content-type: application/json'" \
+  "-d '{\"model\":\"claude-sonnet-4-6\",\"max_tokens\":80,\"messages\":[{\"role\":\"user\",\"content\":\"Echo back this token verbatim: SECRET-AB12CD\"}]}'"
+pause
+curl -s --max-time 25 localhost:8081/anthropic/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-4-6","max_tokens":80,"messages":[{"role":"user","content":"Echo back this token verbatim: SECRET-AB12CD"}]}' \
+  | jq -r '.choices[0].message.content // .error.message // .error // "no response"' | sed 's/^/  reply: /'
+callout "'masked' / '<masked>' in the reply = proof the gateway redacted upstream."
+pause
+
+scene "Verify: default — caller omits max_tokens, gateway enforces it (cap 256)"
+show_curl "curl -s localhost:8081/anthropic/v1/chat/completions" \
+  "-H 'content-type: application/json'" \
+  "-d '{\"model\":\"claude-sonnet-4-6\",\"messages\":[{\"role\":\"user\",\"content\":\"Write a long detailed essay about clouds.\"}]}'"
+pause
+curl -s --max-time 30 localhost:8081/anthropic/v1/chat/completions -H 'content-type: application/json' \
+  -d '{"model":"claude-sonnet-4-6","messages":[{"role":"user","content":"Write a long detailed essay about clouds."}]}' \
+  | jq '{completion_tokens: .usage.completion_tokens, finish_reason: .choices[0].finish_reason}' | sed 's/^/  /'
+callout "completion_tokens ≤ 256 — gateway injected the default for an absent field."
+pause
+
+# ── 7.3 OpenAPI → MCP ────────────────────────────────────────────────────────
+scene "OpenAPI → MCP: turn any REST API into agent tools, zero code"
+narrate "Drop an OpenAPI 3 spec into a ConfigMap, point an entMcp backend at it"
+narrate "with protocol:OpenAPI — every operation becomes an MCP tool, with"
+narrate "auto-generated name / description / JSON Schema. The whole 'wrap your"
+narrate "REST APIs as MCP servers' problem reduces to writing config."
+show_file "${MANIFESTS}/agw-advanced/03-openapi-to-mcp.yaml"
+pause
+apply_file "${MANIFESTS}/agw-advanced/03-openapi-to-mcp.yaml"
+check_ok "ConfigMap + entMcp backend (OpenAPI mode) + HTTPRoute applied"
+sleep 4
+pause
+
+scene "Verify: tools/list on /mcp/openapi-weather — auto-discovered tools"
+narrate "Open MCP Inspector → http://localhost:8081/mcp/openapi-weather"
+narrate "(or run the curl below). The Tools tab shows ONE tool per OpenAPI op,"
+narrate "with the description and parameters taken straight from the spec."
+echo ""
+INIT=$(curl -s -i --max-time 15 localhost:8081/mcp/openapi-weather -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' 2>/dev/null)
+SID=$(echo "$INIT" | grep -i 'mcp-session-id:' | head -1 | tr -d '\r' | awk '{print $2}')
+if [ -n "$SID" ]; then
+  echo -e "  ${DIM}# initialize + tools/list (Streamable HTTP, mcp-session-id: ...)${NC}"
+  curl -s --max-time 15 localhost:8081/mcp/openapi-weather -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -H "mcp-session-id: $SID" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+    | python3 -c "import sys,json
+for line in sys.stdin:
+    if line.startswith('data:'):
+        try:
+            o=json.loads(line[5:].strip())
+            for t in o.get('result',{}).get('tools',[]):
+                print('    tool:',t.get('name'))
+                print('      ',(t.get('description','') or '')[:120])
+        except: pass"
+else
+  check_fail "couldn't open MCP session — check AGW logs"
+fi
+callout "One OpenAPI op → one auto-discovered MCP tool. No CEL, no per-op YAML."
+pause
+
+# ── 7.4 Code Mode ────────────────────────────────────────────────────────────
+scene "Code Mode: replace N tool round-trips with ONE script"
+narrate "Same OpenAPI spec, second backend with toolMode:Code. Instead of"
+narrate "exposing one tool per operation, the gateway exposes ONE tool — a"
+narrate "script executor. The LLM writes JavaScript that calls the underlying"
+narrate "ops as in-process functions. Multi-step workflows go from N+1 LLM"
+narrate "round-trips to ONE."
+show_file "${MANIFESTS}/agw-advanced/04-code-mode.yaml"
+pause
+apply_file "${MANIFESTS}/agw-advanced/04-code-mode.yaml"
+check_ok "Code Mode backend live on /mcp/openapi-weather-code"
+sleep 4
+pause
+
+scene "Verify: tools/list — ONE tool (the script runner), not N"
+INIT=$(curl -s -i --max-time 15 localhost:8081/mcp/openapi-weather-code -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' 2>/dev/null)
+SID=$(echo "$INIT" | grep -i 'mcp-session-id:' | head -1 | tr -d '\r' | awk '{print $2}')
+if [ -n "$SID" ]; then
+  echo -e "  ${DIM}# /mcp/openapi-weather-code  →  Code Mode${NC}"
+  curl -s --max-time 15 localhost:8081/mcp/openapi-weather-code -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -H "mcp-session-id: $SID" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+    | python3 -c "import sys,json
+for line in sys.stdin:
+    if line.startswith('data:'):
+        try:
+            o=json.loads(line[5:].strip())
+            for t in o.get('result',{}).get('tools',[]):
+                print('    tool:',t.get('name'))
+                print('      ',(t.get('description','') or '').splitlines()[0][:120])
+        except: pass"
+fi
+echo ""
+echo -e "  ${DIM}# Compare to Standard mode on the same OpenAPI spec:${NC}"
+INIT=$(curl -s -i --max-time 15 localhost:8081/mcp/openapi-weather -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"demo","version":"1"}}}' 2>/dev/null)
+SID=$(echo "$INIT" | grep -i 'mcp-session-id:' | head -1 | tr -d '\r' | awk '{print $2}')
+[ -n "$SID" ] && curl -s --max-time 15 localhost:8081/mcp/openapi-weather -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' -H "mcp-session-id: $SID" -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' \
+  | python3 -c "import sys,json
+for line in sys.stdin:
+    if line.startswith('data:'):
+        try:
+            o=json.loads(line[5:].strip())
+            for t in o.get('result',{}).get('tools',[]):
+                print('    tool:',t.get('name'),'(Standard)')
+        except: pass"
+callout "Standard mode: one tool per op (the model picks + chains them N times)."
+callout "Code Mode:     one script tool (the model writes the full plan in one go)."
+ui_moment "Open MCP Inspector → connect to BOTH /mcp/openapi-weather and /mcp/openapi-weather-code"
+ui_moment "to see Standard vs Code side-by-side."
+pause
+fi # end ACT 7
+
+###############################################################################
 #  FINALE
 ###############################################################################
 clear
@@ -812,6 +1022,12 @@ echo "    Full catalog of agents and MCP servers"
 echo "    3-tier RBAC (admins / developers / viewers)"
 echo "    Telemetry and tracing for every interaction"
 echo "    Promoted an MCP server raw → governed (gateway) + federated"
+echo ""
+echo -e "  ${GREEN}Advanced AgentGateway${NC}"
+echo "    Eager Auth — apiKey + real OIDC/JWT (Keycloak) rejected at the gateway"
+echo "    Prompt Policies — PII masking, system-message injection, defaults"
+echo "    OpenAPI → MCP — auto-generate tools from a REST spec, zero code"
+echo "    Code Mode — one script tool instead of N tool round-trips"
 echo ""
 echo -e "  ${GREEN}Ambient Mesh${NC}"
 echo "    mTLS encryption for all pod-to-pod traffic"

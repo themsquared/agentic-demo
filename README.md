@@ -57,11 +57,11 @@ Then open the **Solo Enterprise UI** at <http://localhost:9090> (demo/demo).
 
 ```bash
 ./demo.sh             # full walkthrough, press Enter to advance
-./demo.sh --act 4     # jump to a specific act (1-6)
+./demo.sh --act 4     # reset, then play acts 1..N (1-7)
 ./demo.sh --reset     # clear demo resources, keep infrastructure
 ```
 
-The six acts:
+The seven acts:
 
 1. **AgentGateway** — add Anthropic + OpenAI, call them through the gateway
 2. **MCP Servers** — local, composable (zero-code), and remote MCP
@@ -74,6 +74,13 @@ The six acts:
    in-cluster `arctl` helper pod — `ar.dev` objects are registry-API resources,
    not Kubernetes CRDs; see `manifests/README.md`)
 6. **Promote an MCP server to the gateway** — take a cataloged-but-ungoverned MCP server, federate it onto AgentGateway (Virtual MCP), and repoint the catalog entry at the governed endpoint. *(A composed workflow on documented features — not a one-click product action.)*
+7. **Advanced AgentGateway** — four "gateway power-user" capabilities:
+   **Eager Auth** (apiKey + real OIDC/JWT against Keycloak, requests rejected at
+   the gateway before backends are touched), **Prompt Policies** (PII masking,
+   system-message injection, request defaults — all on the LLM backend),
+   **OpenAPI → MCP** (auto-generate MCP tools from a REST spec, zero code), and
+   **Code Mode** (one script tool that replaces N tool round-trips).
+   See `manifests/agw-advanced/` for the manifests.
 
 `demo.sh` shows and applies the **same files** in `manifests/`, so the on-screen
 YAML is exactly what runs. Browse `manifests/` to read the examples directly.

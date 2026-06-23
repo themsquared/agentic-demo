@@ -88,7 +88,7 @@ All three pass → you're demo-ready. Any fail → see §8.
 
 ```bash
 ./demo.sh             # full walkthrough — press Enter to advance, Ctrl-C to bail
-./demo.sh --act 4     # jump to an act (1–6)
+./demo.sh --act 4     # reset, then play acts 1..N (1–7)
 ./demo.sh --reset     # wipe demo resources, keep infrastructure (tracing survives)
 ```
 
@@ -103,6 +103,7 @@ manifest before applying it. Have a browser open alongside.
 | 4 — kagent | ModelConfigs, RemoteMCPServers, 4 agents | Agents are CRDs. All LLM **and** tool traffic flows through the gateway. Chat live in the UI (§6 prompts). |
 | 5 — AgentRegistry | Runtime, catalog entries, 3-tier RBAC | The governance layer — catalog, discovery, RBAC mapped to Keycloak groups. Applied via in-cluster `arctl` (not kubectl). |
 | 6 — Promotion | "Everything" MCP server federated onto the gateway, catalog repointed | Lifecycle story: raw/ungoverned → governed + federated behind one `/mcp/federated` endpoint. *(Composed workflow, not a one-click product feature — say so.)* |
+| 7 — Advanced AgentGateway | Eager Auth (apiKey + Keycloak JWT), Prompt Policies (mask/enrich/defaults), OpenAPI → MCP, Code Mode | The gateway as a *governance plane*. Unauth'd requests die at the gateway. PII is masked before the model sees it. Any REST API becomes an MCP server via config. Code Mode collapses N agent round-trips into one script. Show the apiKey 401/200, the `<masked>` reply, and Standard-vs-Code in MCP Inspector. |
 
 MCP Inspector (for Acts 2/3/6): `npx @modelcontextprotocol/inspector@0.21.2`,
 Transport **Streamable HTTP**, URLs `http://localhost:8081/mcp/weather`,

@@ -1,0 +1,142 @@
+# Act 7 / Scene 3 — Turn an OpenAPI spec into an MCP server with zero code.
+#
+# The gateway reads an OpenAPI 3 document and exposes each operation as an MCP
+# tool — name, description, JSON Schema inputs, the lot. No CEL handwriting per
+# tool (compare to the existing weather-mcp's per-tool `custom` targets); the
+# OpenAPI doc IS the tool definition.
+#
+# Four pieces:
+#   1. ConfigMap mcp-openapi-weather-spec — the OpenAPI 3 spec (text).
+#   2. EnterpriseAgentgatewayBackend open-meteo-api-upstream — the actual HTTP
+#      upstream (api.open-meteo.com:443 over TLS).
+#   3. EnterpriseAgentgatewayBackend openapi-weather-mcp — the entMcp wrapper
+#      with protocol:OpenAPI + schemaRef → ConfigMap. This is the MCP server.
+#   4. HTTPRoute /mcp/openapi-weather — surfaces it on the gateway path.
+#
+# Verify (after apply):
+#
+#   # MCP Inspector:
+#   #   npx @modelcontextprotocol/inspector@0.21.2
+#   #   Transport: Streamable HTTP, URL: http://localhost:8081/mcp/openapi-weather
+#   #   Click Connect → Tools tab → see one tool per OpenAPI operation
+#
+#   # Or via curl (initialize → tools/list):
+#   curl -s -N localhost:8081/mcp/openapi-weather \
+#     -H 'content-type: application/json' \
+#     -H 'accept: application/json, text/event-stream' \
+#     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{
+#         "protocolVersion":"2024-11-05","capabilities":{},
+#         "clientInfo":{"name":"probe","version":"1"}}}'
+#
+# The same pattern works for any OpenAPI spec — point schemaRef at a different
+# ConfigMap and the gateway exposes that API as MCP. This is the "turn every
+# enterprise REST API into an agent tool" play.
+#
+# Note on tools/call: the gateway invokes the upstream successfully, but the
+# shape of the data returned to the MCP client depends on how the OpenAPI
+# response schema is described. With a loose `additionalProperties: true` schema
+# the gateway returns only a status envelope; tighten the response schema (define
+# the actual fields you care about) to surface the upstream payload as structured
+# tool output.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-openapi-weather-spec
+  namespace: agentgateway-system
+data:
+  # Minimal OpenAPI 3 spec for one Open-Meteo endpoint. Operation IDs become
+  # tool names; descriptions become tool descriptions; parameters become the
+  # tool's JSON Schema. Keep this small for demo clarity — real specs can be
+  # hundreds of operations. The gateway parser expects JSON (not YAML).
+  openapi.json: |
+    {
+      "openapi": "3.0.3",
+      "info": {
+        "title": "Open-Meteo Weather (demo subset)",
+        "version": "1.0",
+        "description": "Free weather forecast API — used to demo OpenAPI→MCP."
+      },
+      "servers": [{"url": "https://api.open-meteo.com"}],
+      "paths": {
+        "/v1/forecast": {
+          "get": {
+            "operationId": "get_current_weather",
+            "summary": "Current weather for a lat/lon",
+            "description": "Return current temperature, wind, and weather code for a location.",
+            "parameters": [
+              {"name": "latitude",  "in": "query", "required": true,
+               "description": "Latitude in decimal degrees (e.g. 37.7749 for San Francisco)",
+               "schema": {"type": "number"}},
+              {"name": "longitude", "in": "query", "required": true,
+               "description": "Longitude in decimal degrees (e.g. -122.4194 for San Francisco)",
+               "schema": {"type": "number"}},
+              {"name": "current", "in": "query", "required": false,
+               "description": "Comma-separated current variables (e.g. temperature_2m,wind_speed_10m,weather_code)",
+               "schema": {"type": "string", "default": "temperature_2m,wind_speed_10m,weather_code"}},
+              {"name": "temperature_unit", "in": "query", "required": false,
+               "schema": {"type": "string", "enum": ["celsius","fahrenheit"], "default": "fahrenheit"}},
+              {"name": "wind_speed_unit", "in": "query", "required": false,
+               "schema": {"type": "string", "enum": ["kmh","mph","ms","kn"], "default": "mph"}}
+            ],
+            "responses": {
+              "200": {
+                "description": "OK",
+                "content": {
+                  "application/json": {
+                    "schema": {"type": "object", "additionalProperties": true}
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+---
+# The entMcp backend — protocol:OpenAPI + the spec ConfigMap = an MCP server
+# generated from the OpenAPI doc, exposing one tool per operation.
+#
+# Upstream uses `host`+`port` directly (no backendRef). The entMcp target's
+# `static.backendRef` only accepts a k8s Service name, not an external host —
+# for any external HTTPS upstream (api.open-meteo.com, GitHub, etc.) you set
+# host/port inline and TLS policy on the same `static` block.
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayBackend
+metadata:
+  name: openapi-weather-mcp
+  namespace: agentgateway-system
+spec:
+  entMcp:
+    targets:
+    - name: open-meteo
+      static:
+        host: api.open-meteo.com
+        port: 443
+        protocol: OpenAPI
+        openAPI:
+          schemaRef:
+            name: mcp-openapi-weather-spec   # the ConfigMap above (data: openapi.yaml)
+        policies:
+          tls:
+            sni: api.open-meteo.com         # required for SNI-based hosts
+---
+# Expose it on /mcp/openapi-weather (parallel to /mcp/weather, /mcp/website, etc.).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: openapi-weather-mcp-route
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /mcp/openapi-weather
+    backendRefs:
+    - name: openapi-weather-mcp
+      namespace: agentgateway-system
+      group: enterpriseagentgateway.solo.io
+      kind: EnterpriseAgentgatewayBackend

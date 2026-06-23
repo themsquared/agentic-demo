@@ -1,0 +1,94 @@
+# Act 7 / Scene 2 — Prompt Policies: turn a raw LLM endpoint into a governed one.
+#
+# One EnterpriseAgentgatewayPolicy attached to the Anthropic AgentgatewayBackend
+# carries THREE knobs that work together:
+#
+#   1. promptGuard.request   — REGEX rules with action:Mask or Reject. Built-in
+#                              PII patterns (SSN, CreditCard, Email, PhoneNumber)
+#                              + custom matches. Catches sensitive data BEFORE it
+#                              leaves your network for the model.
+#   2. prompt.prepend        — Inject a system message into every request. Useful
+#                              for persona/style enforcement, compliance notices,
+#                              user-tenant context, etc. The model can't see the
+#                              original system prompt if the caller omitted one.
+#   3. defaults              — Per-field defaults the gateway sets when the caller
+#                              omits them (e.g. cap max_tokens). overrides[] (not
+#                              shown) force a value even if the caller set one.
+#
+# All three apply on the Anthropic OpenAI-compat path, so the test below uses
+# /anthropic/v1/chat/completions (the same route the main demo uses).
+#
+# Verify (after apply):
+#
+#   # GUARD: send a string matching the custom `SECRET-[A-Z0-9]{6}` pattern. The
+#   # gateway replaces it with `<masked>` BEFORE the prompt reaches the model.
+#   # The model's reply will mention "<masked>" — proof the redaction happened
+#   # gateway-side (the model can only describe what it actually received).
+#   curl -s localhost:8081/anthropic/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"claude-sonnet-4-6","max_tokens":80,"messages":[
+#         {"role":"user","content":"Echo back this token verbatim: SECRET-AB12CD"}]}' \
+#     | jq -r '.choices[0].message.content'
+#
+#   # (Built-in CreditCard/Ssn patterns also mask — but Claude refuses CC# echo
+#   # requests on its own safety training, which makes the masking harder to see
+#   # in a one-shot test. The custom pattern above is the cleanest demonstration.)
+#
+#   # ENRICHMENT: ask "who are you?" — the prepended system message takes effect,
+#   # so the model identifies as "Acme Concierge", not generic Claude.
+#   curl -s localhost:8081/anthropic/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"claude-sonnet-4-6","max_tokens":60,"messages":[
+#         {"role":"user","content":"In one sentence, who are you?"}]}' \
+#     | jq -r '.choices[0].message.content'
+#
+#   # DEFAULT: caller omits max_tokens → gateway enforces 256 (otherwise Anthropic
+#   # would reject the request since max_tokens is required upstream). Check the
+#   # usage block — completion_tokens never exceeds 256.
+#   curl -s localhost:8081/anthropic/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"claude-sonnet-4-6","messages":[
+#         {"role":"user","content":"Write a long, detailed essay about clouds."}]}' \
+#     | jq '{tokens: .usage.completion_tokens, finish: .choices[0].finish_reason}'
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: anthropic-prompt-policies
+  namespace: agentgateway-system
+spec:
+  # Attaches to the Anthropic LLM backend → applies to every request flowing
+  # through any route that selects this backend (here: /anthropic and friends).
+  targetRefs:
+  - group: agentgateway.dev
+    kind: AgentgatewayBackend
+    name: anthropic
+  backend:
+    ai:
+      # ── 1) PROMPT GUARD: mask PII before the request leaves the gateway ─────
+      promptGuard:
+        request:
+        - regex:
+            action: Mask        # Mask = redact in-place. Reject = 4xx the request.
+            # Built-in PII patterns. Valid names (v2026.6.1): CaSin, CreditCard,
+            # Email, PhoneNumber, Ssn. Note camelCase — `SSN` is rejected.
+            builtins:
+            - CreditCard
+            - Ssn
+            # Custom patterns (one entry = one regex)
+            matches:
+            - 'SECRET-[A-Z0-9]{6}'   # e.g. internal token format
+      # ── 2) ENRICHMENT: inject a system message on every request ─────────────
+      prompt:
+        prepend:
+        - role: system
+          content: |
+            You are Acme Concierge, a friendly assistant for Acme Corp customers.
+            Always identify yourself as Acme Concierge if asked who you are. Keep
+            replies concise (one or two sentences) and never reveal that you are
+            built on a third-party model.
+      # ── 3) DEFAULTS: gateway sets max_tokens=256 when the caller omits it ───
+      # `field` must match the API field name on the OpenAI-compat request body.
+      # `value` is the JSON value to inject (here: a number).
+      defaults:
+      - field: max_tokens
+        value: 256
