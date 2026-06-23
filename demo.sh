@@ -16,7 +16,7 @@
 # Usage:
 #   ./demo.sh              # run the full interactive demo
 #   ./demo.sh --reset      # just reset demo resources (clean slate)
-#   ./demo.sh --act 3      # jump to a specific act
+#   ./demo.sh --act 3      # reset, then play acts 1..3 and stop
 #
 # Controls:
 #   Press Enter to advance each step.  Ctrl-C to exit at any time.
@@ -212,12 +212,15 @@ preflight() {
 ###############################################################################
 # Parse args
 ###############################################################################
-START_ACT=1
+# END_ACT controls how far into the demo we play. With no --act flag we run all
+# six acts. With --act N we reset, then play acts 1..N (so act N has the state
+# it expects — agents need LLMs, AR needs agents, etc.) and stop after N.
+END_ACT=6
 for arg in "$@"; do
   case "$arg" in
     --reset) reset_demo; exit 0 ;;
-    --act)   shift; START_ACT=${1:-1} ;;
-    [1-6])   START_ACT=$arg ;;
+    --act)   shift; END_ACT=${1:-6} ;;
+    [1-6])   END_ACT=$arg ;;
   esac
 done
 
@@ -234,7 +237,7 @@ pause
 #  ACT 1 — AgentGateway: Your AI Traffic Controller
 #
 ###############################################################################
-if [ "$START_ACT" -le 1 ]; then
+if [ "$END_ACT" -ge 1 ]; then
 act 1 "AgentGateway — Your AI Traffic Controller"
 
 narrate "AgentGateway sits between your agents and AI providers."
@@ -281,13 +284,17 @@ scene "Test: Call Claude Through the Gateway"
 narrate "A single curl to the gateway — it handles auth, routing, and logging."
 callout "Notice: no API key in the request. The gateway injects it."
 echo ""
-echo -e "  ${YELLOW}\$ curl -s localhost:8081/anthropic/v1/messages ...${NC}"
+echo -e "  ${YELLOW}\$ curl -s localhost:8081/anthropic/v1/chat/completions ...${NC}"
 pause
-RESPONSE=$(curl -s "${AGW_PROXY}/anthropic/v1/messages" \
+# AGW exposes a unified OpenAI-compatible LLM API and translates to each provider's
+# native API upstream. So both /anthropic and /openai routes return OpenAI-shape
+# JSON (.choices[0].message.content), even for Claude. Calling /anthropic/v1/messages
+# also works (the gateway accepts it) but the response is still OpenAI-shape — so
+# we use /v1/chat/completions and the .choices[0] filter for both providers.
+RESPONSE=$(curl -s "${AGW_PROXY}/anthropic/v1/chat/completions" \
   -H "content-type: application/json" \
-  -H "anthropic-version: 2023-06-01" \
   -d '{"model":"claude-sonnet-4-6","max_tokens":150,"messages":[{"role":"user","content":"In one sentence, what is an AI gateway?"}]}' 2>/dev/null || echo '{"error":"connection failed"}')
-echo "$RESPONSE" | jq -r '.content[0].text // .error // "No response"' 2>/dev/null | sed 's/^/    /' || echo "    $RESPONSE"
+echo "$RESPONSE" | jq -r '.choices[0].message.content // .error.message // .error // "No response"' 2>/dev/null | sed 's/^/    /' || echo "    $RESPONSE"
 check_ok "Claude responded through the gateway!"
 pause
 
@@ -328,7 +335,7 @@ fi # end ACT 1
 #  ACT 2 — MCP Servers: Tools for Your Agents
 #
 ###############################################################################
-if [ "$START_ACT" -le 2 ]; then
+if [ "$END_ACT" -ge 2 ]; then
 act 2 "MCP Servers — Tools for Your Agents"
 
 narrate "MCP (Model Context Protocol) gives agents access to tools:"
@@ -346,7 +353,6 @@ scene "Local MCP: Website Fetcher"
 narrate "A real MCP server running as a K8s deployment — it fetches web pages."
 callout 'Key detail: the Service uses appProtocol: "agentgateway.dev/mcp"'
 callout "That tells AgentGateway this is MCP traffic, not plain HTTP."
-pause
 show_file "${MANIFESTS}/mcp-servers/website-fetcher.yaml"
 pause
 apply_file "${MANIFESTS}/mcp-servers/website-fetcher.yaml"
@@ -359,7 +365,6 @@ narrate "An Enterprise AgentGateway feature: define MCP tools in pure YAML."
 narrate "No container, no code — AGW calls an HTTP API and transforms the"
 narrate "response using CEL expressions. We wrap the free Open-Meteo API."
 callout "Read the inputSchema, the CEL 'path', and the CEL 'output' below."
-pause
 show_file "${MANIFESTS}/mcp-servers/weather-composable.yaml"
 pause
 apply_file "${MANIFESTS}/mcp-servers/weather-composable.yaml"
@@ -373,7 +378,6 @@ narrate "  Step 1: fetch the user profile   → output.user"
 narrate "  Step 2: fetch their recent repos → output.repos"
 narrate "  output: a CEL expression combines both"
 callout "Multi-step composable tools — still zero code."
-pause
 show_file "${MANIFESTS}/mcp-servers/github-profile-composable.yaml"
 pause
 apply_file "${MANIFESTS}/mcp-servers/github-profile-composable.yaml"
@@ -384,7 +388,6 @@ pause
 scene "Remote MCP: GitHub (Copilot API)"
 narrate "An external MCP server hosted by GitHub. AGW proxies it over TLS."
 callout "In Act 3 we'll add OAuth elicitation so agents get user consent."
-pause
 show_file "${MANIFESTS}/mcp-servers/github-remote.yaml"
 pause
 apply_file "${MANIFESTS}/mcp-servers/github-remote.yaml"
@@ -394,7 +397,6 @@ pause
 # ── 2.5 Routes ───────────────────────────────────────────────────────────────
 scene "Route All MCP Servers Through the Gateway"
 narrate "One HTTPRoute, one rule per MCP server — each gets its own path."
-pause
 show_file "${MANIFESTS}/mcp-servers/routes.yaml"
 pause
 apply_file "${MANIFESTS}/mcp-servers/routes.yaml"
@@ -426,7 +428,7 @@ fi # end ACT 2
 #  ACT 3 — Enterprise Security
 #
 ###############################################################################
-if [ "$START_ACT" -le 3 ]; then
+if [ "$END_ACT" -ge 3 ]; then
 act 3 "Enterprise Security"
 
 narrate "Three layers of security protect the agentic stack:"
@@ -489,7 +491,7 @@ fi # end ACT 3
 #  ACT 4 — kagent: Kubernetes-Native AI Agents
 #
 ###############################################################################
-if [ "$START_ACT" -le 4 ]; then
+if [ "$END_ACT" -ge 4 ]; then
 act 4 "kagent — Kubernetes-Native AI Agents"
 
 narrate "kagent deploys agents as Kubernetes pods. Each agent is defined by CRDs:"
@@ -513,7 +515,6 @@ kubectl create secret generic anthropic-api-key -n "${KAGENT_NS}" \
 kubectl create secret generic openai-api-key -n "${KAGENT_NS}" \
   --from-literal=key="${OPENAI_API_KEY}" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 check_ok "API-key secrets created in ${KAGENT_NS}"
-pause
 show_file "${MANIFESTS}/kagent/modelconfigs.yaml"
 pause
 apply_file "${MANIFESTS}/kagent/modelconfigs.yaml"
@@ -526,7 +527,6 @@ scene "RemoteMCPServers: Tool Access via AgentGateway"
 narrate "RemoteMCPServers tell kagent where to find MCP tools. Each points at an"
 narrate "AgentGateway route, so the path is:"
 callout "Agent → kagent RemoteMCPServer → AgentGateway → actual MCP backend"
-pause
 show_file "${MANIFESTS}/kagent/remote-mcp-servers.yaml"
 pause
 apply_file "${MANIFESTS}/kagent/remote-mcp-servers.yaml"
@@ -538,7 +538,6 @@ pause
 scene "Deploy Agent: Weather Assistant"
 narrate "Our first agent — the full pipeline in one resource:"
 narrate "  Anthropic (via AGW) for reasoning + Weather MCP (via AGW) for data."
-pause
 show_file "${MANIFESTS}/kagent/agents/weather-assistant.yaml"
 pause
 apply_file "${MANIFESTS}/kagent/agents/weather-assistant.yaml"
@@ -549,7 +548,6 @@ pause
 scene "Deploy Agent: Research Agent (Multi-Tool)"
 narrate "Two MCP tools: website fetcher + GitHub profiles."
 callout "Multi-tool agent working through a single gateway."
-pause
 show_file "${MANIFESTS}/kagent/agents/research-agent.yaml"
 pause
 apply_file "${MANIFESTS}/kagent/agents/research-agent.yaml"
@@ -561,7 +559,6 @@ scene "Deploy Agent: GitHub Assistant (OBO / Elicitation)"
 narrate "The agent that triggers the elicitation flow from Act 3."
 narrate "First call to the GitHub MCP → OAuth consent → token stored → access."
 callout "allowedHeaders: [Authorization] propagates the user's identity."
-pause
 show_file "${MANIFESTS}/kagent/agents/github-assistant.yaml"
 pause
 apply_file "${MANIFESTS}/kagent/agents/github-assistant.yaml"
@@ -573,7 +570,6 @@ scene "Deploy Agent: Orchestrator (A2A Multi-Agent)"
 narrate "The finale agent. It doesn't call tools directly — it delegates to the"
 narrate "specialist agents via A2A. Powered by GPT-4o while specialists use Claude."
 callout "tools.type: Agent (not McpServer) — agents as tools for other agents."
-pause
 show_file "${MANIFESTS}/kagent/agents/orchestrator-agent.yaml"
 pause
 apply_file "${MANIFESTS}/kagent/agents/orchestrator-agent.yaml"
@@ -608,7 +604,7 @@ fi # end ACT 4
 #  ACT 5 — AgentRegistry: The Catalog
 #
 ###############################################################################
-if [ "$START_ACT" -le 5 ]; then
+if [ "$END_ACT" -ge 5 ]; then
 act 5 "AgentRegistry — The Agent Catalog"
 
 narrate "AgentRegistry is the governance layer:"
@@ -626,7 +622,6 @@ pause
 # ── 5.1 Runtime ──────────────────────────────────────────────────────────────
 scene "Register the kagent Runtime"
 narrate "A Runtime tells AgentRegistry WHERE to deploy agents — here, kagent."
-pause
 show_file "${MANIFESTS}/agentregistry/runtime.yaml"
 pause
 ar_apply_file "${MANIFESTS}/agentregistry/runtime.yaml"
@@ -636,7 +631,6 @@ pause
 # ── 5.2 MCP servers ──────────────────────────────────────────────────────────
 scene "Register MCP Servers in the Catalog"
 narrate "Catalog entries make MCP servers discoverable before teams wire them in."
-pause
 show_file "${MANIFESTS}/agentregistry/mcp-servers.yaml"
 pause
 ar_apply_file "${MANIFESTS}/agentregistry/mcp-servers.yaml"
@@ -647,7 +641,6 @@ pause
 scene "Register Agents in the Catalog"
 narrate "Agent catalog entries carry discovery metadata: framework, language,"
 narrate "model, and MCP dependencies."
-pause
 show_file "${MANIFESTS}/agentregistry/agents.yaml"
 pause
 ar_apply_file "${MANIFESTS}/agentregistry/agents.yaml"
@@ -660,7 +653,6 @@ narrate "AccessPolicies control registry + runtime permissions. Roles map to"
 narrate "Keycloak groups via the 'Groups' JWT claim. Three tiers:"
 narrate "  admins → full | developers → browse + invoke | viewers → browse"
 callout 'Our "demo" user is in the admins group.'
-pause
 show_file "${MANIFESTS}/agentregistry/access-policies.yaml"
 pause
 ar_apply_file "${MANIFESTS}/agentregistry/access-policies.yaml"
@@ -686,7 +678,7 @@ fi # end ACT 5
 #  ACT 6 — Promote an MCP Server to the Gateway
 #
 ###############################################################################
-if [ "$START_ACT" -le 6 ]; then
+if [ "$END_ACT" -ge 6 ]; then
 act 6 "Promote an MCP Server to the Gateway"
 
 narrate "A common lifecycle question: I have an MCP server cataloged in"
@@ -703,7 +695,6 @@ pause
 scene "Before: Cataloged, but Bypassing the Gateway"
 ensure_arctl_helper   # AR catalog applies go through the in-cluster arctl helper
 narrate "Deploy a fresh MCP server (the MCP reference 'everything' server)."
-pause
 show_file "${MANIFESTS}/mcp-servers/everything-server.yaml"
 pause
 apply_file "${MANIFESTS}/mcp-servers/everything-server.yaml"
@@ -725,7 +716,6 @@ narrate "Create a federated 'Virtual MCP' backend that multiplexes the everythin
 narrate "server AND the website-fetcher behind a single /mcp/federated endpoint."
 callout "One AgentgatewayBackend, multiple targets, one client connection."
 callout "failureMode: FailOpen → healthy targets keep serving if one is down."
-pause
 show_file "${MANIFESTS}/mcp-servers/virtual-mcp.yaml"
 pause
 apply_file "${MANIFESTS}/mcp-servers/virtual-mcp.yaml"
@@ -739,7 +729,6 @@ narrate "the URL flips from the raw Service to the governed gateway endpoint."
 narrate "Compare the 'remote.url' in the before/after manifests:"
 echo -e "  ${DIM}before →${NC} ...mcp-server-everything...svc.cluster.local:3001/mcp  ${DIM}(raw)${NC}"
 echo -e "  ${DIM}after  →${NC} ...agentgateway-proxy...svc.cluster.local/mcp/federated  ${DIM}(gateway)${NC}"
-pause
 show_file "${MANIFESTS}/agentregistry/everything-mcp-promoted.yaml"
 pause
 ar_apply_file "${MANIFESTS}/agentregistry/everything-mcp-promoted.yaml"
@@ -822,7 +811,7 @@ echo -e "  AgentRegistry API:   ${GREEN}http://localhost:12121${NC}"
 echo ""
 echo -e "${BOLD}Replay:${NC}"
 echo "  ./demo.sh          # full walkthrough"
-echo "  ./demo.sh --act 3  # jump to a specific act"
+echo "  ./demo.sh --act 3  # reset, then play acts 1..3 and stop"
 echo "  ./demo.sh --reset  # clean slate"
 echo ""
 echo -e "${GREEN}${BOLD}Thanks for watching!${NC}"
