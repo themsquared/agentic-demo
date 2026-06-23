@@ -452,7 +452,6 @@ echo ""
 callout 'Try: get-weather-by-city → {"city": "Cambridge"}'
 callout 'Try: github-user-summary → {"username": "solo-io"}'
 ui_moment "Test MCP tools in the Inspector, then come back here."
-pause
 fi # end ACT 2
 
 ###############################################################################
@@ -628,7 +627,6 @@ echo ""
 callout "The orchestrator delegates to weather-assistant AND research-agent."
 callout "Watch GPT-4o orchestrate Claude Sonnet 4 specialists!"
 ui_moment "Open the UI, test the agents, then come back for the final act."
-pause
 fi # end ACT 4
 
 ###############################################################################
@@ -702,7 +700,6 @@ narrate "  • RBAC policy management"
 echo ""
 echo -e "  ${BOLD}URL:${NC}   ${GREEN}http://localhost:9090${NC}    ${BOLD}Login:${NC} demo / demo"
 ui_moment "Explore the catalog and traces in the UI."
-pause
 fi # end ACT 5
 
 ###############################################################################
@@ -789,7 +786,6 @@ callout "Before: each server hit directly, ungoverned, separate endpoints."
 callout "After: one governed /mcp/federated endpoint, AGW auth+policy+telemetry,"
 callout "       and a single catalog entry agents can point at."
 ui_moment "Browse /mcp/federated in the Inspector, then come back."
-pause
 fi # end ACT 6
 
 ###############################################################################
@@ -989,9 +985,20 @@ for line in sys.stdin:
         except: pass"
 callout "Standard mode: one tool per op (the model picks + chains them N times)."
 callout "Code Mode:     one script tool (the model writes the full plan in one go)."
-ui_moment "Open MCP Inspector → connect to BOTH /mcp/openapi-weather and /mcp/openapi-weather-code"
-ui_moment "to see Standard vs Code side-by-side."
-pause
+echo ""
+narrate "Connect MCP Inspector to BOTH endpoints (Transport: Streamable HTTP) to"
+narrate "see the same OpenAPI spec exposed two different ways:"
+echo ""
+echo -e "    ${BOLD}Standard mode${NC} — one tool per OpenAPI op"
+echo -e "      Transport: ${GREEN}Streamable HTTP${NC}"
+echo -e "      URL:       ${GREEN}http://localhost:8081/mcp/openapi-weather${NC}"
+echo ""
+echo -e "    ${BOLD}Code Mode${NC} — one script-executor tool that calls those ops itself"
+echo -e "      Transport: ${GREEN}Streamable HTTP${NC}"
+echo -e "      URL:       ${GREEN}http://localhost:8081/mcp/openapi-weather-code${NC}"
+echo ""
+narrate "Start the Inspector with:  ${BOLD}npx @modelcontextprotocol/inspector@0.21.2${NC}"
+ui_moment "Open both URLs in the Inspector, compare the Tools tabs, then come back."
 fi # end ACT 7
 
 ###############################################################################
