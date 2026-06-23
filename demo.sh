@@ -143,6 +143,25 @@ run_cmd() {
   eval "$@" 2>&1 | sed 's/^/    /'
 }
 
+# Display a multi-line curl (or any long command) as the user could paste it —
+# first arg is the head ("curl -s URL"), remaining args are continuation lines
+# (each rendered with backslash + indent). Doesn't run anything; the caller is
+# responsible for actually executing the command (so we keep response capture).
+show_curl() {
+  local head=$1; shift
+  echo -e "  ${YELLOW}\$ ${head} \\${NC}"
+  local last_idx=$#
+  local i=0
+  for line in "$@"; do
+    i=$((i+1))
+    if [ "$i" -lt "$last_idx" ]; then
+      echo -e "  ${YELLOW}    ${line} \\${NC}"
+    else
+      echo -e "  ${YELLOW}    ${line}${NC}"
+    fi
+  done
+}
+
 ui_moment() {
   echo ""
   echo -e "  ${BG_BLUE}${WHITE}  SWITCH TO BROWSER  ${NC}"
@@ -284,13 +303,15 @@ scene "Test: Call Claude Through the Gateway"
 narrate "A single curl to the gateway — it handles auth, routing, and logging."
 callout "Notice: no API key in the request. The gateway injects it."
 echo ""
-echo -e "  ${YELLOW}\$ curl -s localhost:8081/anthropic/v1/chat/completions ...${NC}"
-pause
 # AGW exposes a unified OpenAI-compatible LLM API and translates to each provider's
 # native API upstream. So both /anthropic and /openai routes return OpenAI-shape
 # JSON (.choices[0].message.content), even for Claude. Calling /anthropic/v1/messages
 # also works (the gateway accepts it) but the response is still OpenAI-shape — so
 # we use /v1/chat/completions and the .choices[0] filter for both providers.
+show_curl "curl -s localhost:8081/anthropic/v1/chat/completions" \
+  "-H 'content-type: application/json'" \
+  "-d '{\"model\":\"claude-sonnet-4-6\",\"max_tokens\":150,\"messages\":[{\"role\":\"user\",\"content\":\"In one sentence, what is an AI gateway?\"}]}'"
+pause
 RESPONSE=$(curl -s "${AGW_PROXY}/anthropic/v1/chat/completions" \
   -H "content-type: application/json" \
   -d '{"model":"claude-sonnet-4-6","max_tokens":150,"messages":[{"role":"user","content":"In one sentence, what is an AI gateway?"}]}' 2>/dev/null || echo '{"error":"connection failed"}')
@@ -310,12 +331,15 @@ pause
 apply_file "${MANIFESTS}/llm-providers/openai.yaml"
 check_ok "OpenAI available at /openai"
 
-narrate ""
-narrate "Testing GPT-4o..."
+echo ""
+show_curl "curl -s localhost:8081/openai/v1/chat/completions" \
+  "-H 'content-type: application/json'" \
+  "-d '{\"model\":\"gpt-4o\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"In one sentence, what is an AI gateway?\"}]}'"
+pause
 RESPONSE=$(curl -s "${AGW_PROXY}/openai/v1/chat/completions" \
   -H "content-type: application/json" \
   -d '{"model":"gpt-4o","max_tokens":100,"messages":[{"role":"user","content":"In one sentence, what is an AI gateway?"}]}' 2>/dev/null || echo '{"error":"connection failed"}')
-echo "$RESPONSE" | jq -r '.choices[0].message.content // .error // "No response"' 2>/dev/null | sed 's/^/    /' || echo "    $RESPONSE"
+echo "$RESPONSE" | jq -r '.choices[0].message.content // .error.message // .error // "No response"' 2>/dev/null | sed 's/^/    /' || echo "    $RESPONSE"
 check_ok "GPT-4o responded through the gateway!"
 pause
 
