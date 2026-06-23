@@ -16,7 +16,9 @@
 # Usage:
 #   ./demo.sh              # run the full interactive demo
 #   ./demo.sh --reset      # just reset demo resources (clean slate)
-#   ./demo.sh --act 3      # reset, then play acts 1..3 and stop
+#   ./demo.sh --act 3      # reset, fast-forward through acts 1..2 silently (no
+#                          # prompts, no YAML walls — state is built up so act 3
+#                          # has its prereqs), then play act 3 live.
 #
 # Controls:
 #   Press Enter to advance each step.  Ctrl-C to exit at any time.
@@ -57,8 +59,14 @@ NC='\033[0m'
 BG_BLUE='\033[44m'
 
 STEP_NUM=0
+# SILENT is true while fast-forwarding through acts 1..START_ACT-1 (when --act N
+# is set with N>1). Display helpers respect it: no prompts, no browser switches,
+# no giant YAML walls — but apply_file / run_cmd / curl still execute so the
+# cluster state catches up to where act N expects to start. Set per-act below.
+SILENT=false
 
 pause() {
+  [ "$SILENT" = "true" ] && return 0
   echo ""
   echo -en "  ${DIM}[ Press Enter to continue ]${NC}"
   read -r
@@ -68,6 +76,12 @@ pause() {
 act() {
   local num=$1; shift
   STEP_NUM=0
+  # In silent (fast-forward) mode, no clear, no big banner, no pause — just a
+  # one-liner so the user can see progress.
+  if [ "$SILENT" = "true" ]; then
+    echo -e "${DIM}▶ fast-forwarding Act ${num} — ${*}...${NC}"
+    return 0
+  fi
   clear
   echo ""
   echo -e "${BG_BLUE}${WHITE}                                                                    ${NC}"
@@ -79,6 +93,7 @@ act() {
 
 scene() {
   STEP_NUM=$((STEP_NUM + 1))
+  [ "$SILENT" = "true" ] && return 0
   echo ""
   echo -e "${BOLD}${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${BOLD}${CYAN}  ${STEP_NUM}. $*${NC}"
@@ -86,8 +101,8 @@ scene() {
   echo ""
 }
 
-narrate()  { echo -e "  ${DIM}$*${NC}"; }
-callout()  { echo -e "  ${YELLOW}▸ $*${NC}"; }
+narrate()  { [ "$SILENT" = "true" ] && return 0; echo -e "  ${DIM}$*${NC}"; }
+callout()  { [ "$SILENT" = "true" ] && return 0; echo -e "  ${YELLOW}▸ $*${NC}"; }
 check_ok() { echo -e "  ${GREEN}✓ $*${NC}"; }
 check_fail(){ echo -e "  ${RED}✗ $*${NC}"; }
 
@@ -98,10 +113,15 @@ section_break() {
 }
 
 # Show the real manifest file (this is the single source of truth — it's the
-# exact file apply_file applies).
+# exact file apply_file applies). In silent mode just print the path (skip the
+# YAML body) so fast-forward output stays scannable.
 show_file() {
   local f=$1
   local rel="manifests/${f#"${MANIFESTS}"/}"
+  if [ "$SILENT" = "true" ]; then
+    echo -e "  ${DIM}📄 ${rel}${NC}"
+    return 0
+  fi
   echo -e "  ${BOLD}📄 ${rel}${NC}"
   echo -e "  ${MAGENTA}┌────────────────────────────────────────────────────────${NC}"
   while IFS= read -r line; do
@@ -163,6 +183,8 @@ show_curl() {
 }
 
 ui_moment() {
+  # No point asking the user to switch to the browser during fast-forward.
+  [ "$SILENT" = "true" ] && return 0
   echo ""
   echo -e "  ${BG_BLUE}${WHITE}  SWITCH TO BROWSER  ${NC}"
   echo -e "  ${BOLD}$*${NC}"
@@ -239,17 +261,23 @@ preflight() {
 ###############################################################################
 # Parse args
 ###############################################################################
-# END_ACT controls how far into the demo we play. With no --act flag we run all
-# seven acts. With --act N we reset, then play acts 1..N (so act N has the state
-# it expects — agents need LLMs, AR needs agents, etc.) and stop after N.
+# With no --act flag we run all seven acts live (START_ACT=1, END_ACT=7).
+# With --act N we reset, FAST-FORWARD through acts 1..N-1 silently (no prompts,
+# no YAML walls, but apply_file/kubectl still execute so the cluster has the
+# state act N expects), then play act N live and stop.
+START_ACT=1
 END_ACT=7
 for arg in "$@"; do
   case "$arg" in
     --reset) reset_demo; exit 0 ;;
-    --act)   shift; END_ACT=${1:-7} ;;
-    [1-7])   END_ACT=$arg ;;
+    --act)   shift; START_ACT=${1:-1}; END_ACT=$START_ACT ;;
+    [1-7])   START_ACT=$arg; END_ACT=$arg ;;
   esac
 done
+# Helper: call at the start of each act block to enter/leave silent mode.
+silent_for() {
+  if [ "$1" -lt "$START_ACT" ]; then SILENT=true; else SILENT=false; fi
+}
 
 preflight
 reset_demo
@@ -265,6 +293,7 @@ pause
 #
 ###############################################################################
 if [ "$END_ACT" -ge 1 ]; then
+silent_for 1
 act 1 "AgentGateway — Your AI Traffic Controller"
 
 narrate "AgentGateway sits between your agents and AI providers."
@@ -368,6 +397,7 @@ fi # end ACT 1
 #
 ###############################################################################
 if [ "$END_ACT" -ge 2 ]; then
+silent_for 2
 act 2 "MCP Servers — Tools for Your Agents"
 
 narrate "MCP (Model Context Protocol) gives agents access to tools:"
@@ -460,6 +490,7 @@ fi # end ACT 2
 #
 ###############################################################################
 if [ "$END_ACT" -ge 3 ]; then
+silent_for 3
 act 3 "Enterprise Security"
 
 narrate "Three layers of security protect the agentic stack:"
@@ -523,6 +554,7 @@ fi # end ACT 3
 #
 ###############################################################################
 if [ "$END_ACT" -ge 4 ]; then
+silent_for 4
 act 4 "kagent — Kubernetes-Native AI Agents"
 
 narrate "kagent deploys agents as Kubernetes pods. Each agent is defined by CRDs:"
@@ -635,6 +667,7 @@ fi # end ACT 4
 #
 ###############################################################################
 if [ "$END_ACT" -ge 5 ]; then
+silent_for 5
 act 5 "AgentRegistry — The Agent Catalog"
 
 narrate "AgentRegistry is the governance layer:"
@@ -708,6 +741,7 @@ fi # end ACT 5
 #
 ###############################################################################
 if [ "$END_ACT" -ge 6 ]; then
+silent_for 6
 act 6 "Promote an MCP Server to the Gateway"
 
 narrate "A common lifecycle question: I have an MCP server cataloged in"
@@ -794,6 +828,7 @@ fi # end ACT 6
 #
 ###############################################################################
 if [ "$END_ACT" -ge 7 ]; then
+silent_for 7
 act 7 "Advanced AgentGateway — Eager Auth, Prompt Policies, OpenAPI→MCP, Code Mode"
 
 narrate "Four power-user capabilities that turn the gateway from 'a place"
@@ -1058,7 +1093,7 @@ echo -e "  AgentRegistry API:   ${GREEN}http://localhost:12121${NC}"
 echo ""
 echo -e "${BOLD}Replay:${NC}"
 echo "  ./demo.sh          # full walkthrough"
-echo "  ./demo.sh --act 3  # reset, then play acts 1..3 and stop"
+echo "  ./demo.sh --act 3  # reset, fast-forward acts 1..2 silently, then play act 3 live"
 echo "  ./demo.sh --reset  # clean slate"
 echo ""
 echo -e "${GREEN}${BOLD}Thanks for watching!${NC}"
