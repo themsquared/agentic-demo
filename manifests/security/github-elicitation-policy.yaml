@@ -25,17 +25,27 @@ spec:
     group: agentgateway.dev
   backend:
     tokenExchange:
-      # REQUIRED on AGW v2026.6.1+. Two values:
-      #   ElicitationOnly — issue an elicitation prompt when there's no stored
-      #                     token for the caller; once stored, subsequent calls
-      #                     swap in that token. This is the demo's flow (user
-      #                     OAuth → token in STS → re-used on later requests).
-      #   ExchangeOnly    — pure RFC8693 token exchange, no elicitation prompt
-      #                     (use when the gateway can mint downstream tokens
-      #                      from the caller's subject token without user input).
-      # Without `mode` set, the gateway runs a degraded path: it neither issues
-      # an elicitation prompt nor forwards a valid token, so the upstream returns
-      # a generic "invalid request" and the agent throws TaskGroup exceptions.
-      mode: ElicitationOnly
+      # REQUIRED on AGW v2026.6.1+. The enum names are MISLEADING — verified empirically:
+      #
+      #   ExchangeOnly  — the OBO flow this demo wants. On a request with no
+      #                   stored token: returns the elicitation-pending prompt
+      #                   (using `elicitation.secretName` below) → user
+      #                   authorizes → token stored in STS. On every subsequent
+      #                   request: swaps the caller's subject token for the
+      #                   stored token before forwarding to the upstream.
+      #
+      #   ElicitationOnly — issues the elicitation prompt and stores the token,
+      #                     but on subsequent requests DOES NOT swap. It
+      #                     forwards the caller's original (Keycloak JWT)
+      #                     token to the upstream. GitHub then rejects with
+      #                     `www-authenticate: invalid_token` +
+      #                     `bad request: Authorization header is badly formatted`
+      #                     because a 1094-char JWT isn't a valid GitHub token.
+      #                     The agent surfaces this as "Failed to create MCP
+      #                     session: TaskGroup (1 sub-exception)".
+      #
+      # With `mode` unset entirely, the gateway never issues an elicitation
+      # prompt and never swaps — it just forwards the caller's token raw.
+      mode: ExchangeOnly
       elicitation:
         secretName: elicitation-oidc  # ← GitHub OAuth credentials
