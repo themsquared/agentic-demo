@@ -25,5 +25,17 @@ spec:
     group: agentgateway.dev
   backend:
     tokenExchange:
+      # REQUIRED on AGW v2026.6.1+. Two values:
+      #   ElicitationOnly — issue an elicitation prompt when there's no stored
+      #                     token for the caller; once stored, subsequent calls
+      #                     swap in that token. This is the demo's flow (user
+      #                     OAuth → token in STS → re-used on later requests).
+      #   ExchangeOnly    — pure RFC8693 token exchange, no elicitation prompt
+      #                     (use when the gateway can mint downstream tokens
+      #                      from the caller's subject token without user input).
+      # Without `mode` set, the gateway runs a degraded path: it neither issues
+      # an elicitation prompt nor forwards a valid token, so the upstream returns
+      # a generic "invalid request" and the agent throws TaskGroup exceptions.
+      mode: ElicitationOnly
       elicitation:
         secretName: elicitation-oidc  # ← GitHub OAuth credentials
