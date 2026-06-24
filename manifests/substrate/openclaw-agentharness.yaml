@@ -1,0 +1,53 @@
+# OpenClaw on Agent Substrate — a kagent AgentHarness with runtime: substrate.
+#
+# This is the "deploy a real coding agent in the kagent UI, running on Substrate"
+# piece. Unlike the raw counter Actor (pure ate.dev primitives), this is a
+# kagent.dev/v1alpha2 AgentHarness — kagent owns it, shows it in its UI, and
+# generates the underlying Substrate ActorTemplate + actor for you.
+#
+# What kagent does when this is applied (verified live):
+#   1. Generates an `actortemplates.ate.dev` named `openclaw-demo` (gvisor class),
+#      with pauseImage / runsc URLs / the OpenClaw sandbox image from the
+#      controller's Helm values.
+#   2. Creates a golden-snapshot actor for the template, then a live actor
+#      `ahr-kagent-<ns>-<name>` scheduled onto the referenced WorkerPool.
+#   3. Bakes an openclaw.json (model config + gateway token + control-UI basePath)
+#      into the actor's startup command.
+#   4. Sets the harness `status.connection.endpoint` and proxies the OpenClaw
+#      Control UI under  /api/agentharnesses/<ns>/<name>/gateway/  in the kagent UI.
+#
+# Prereqs (installed by setup-substrate.sh):
+#   - Substrate control plane (ate-system) + a WorkerPool (kagent-default)
+#   - kagent OSS with controller.substrate.enabled=true
+#   - a ModelConfig (default-model-config) — created from your .env Anthropic key
+#
+# Apply:
+#   kubectl --context kind-substrate-demo apply -f manifests/substrate/openclaw-agentharness.yaml
+#
+# Then in the kagent UI (kubectl port-forward -n kagent svc/kagent-ui 8001:8080):
+#   - the harness appears under Agents / AgentHarnesses
+#   - open it → OpenClaw Control UI loads (proxied through Substrate's atenet-router)
+#   - if it asks to connect a gateway:
+#       Gateway URL:   http://localhost:8001/api/agentharnesses/kagent/openclaw-demo/gateway/
+#                      (the trailing slash is REQUIRED)
+#       Gateway token: test-token   (the spec.substrate.gatewayToken below)
+apiVersion: kagent.dev/v1alpha2
+kind: AgentHarness
+metadata:
+  name: openclaw-demo
+  namespace: kagent
+spec:
+  runtime: substrate              # vs the default 'openshell' — this opts into Substrate
+  backend: openclaw               # OpenClaw coding-agent gateway
+  description: OpenClaw coding agent on Agent Substrate
+  modelConfigRef: default-model-config   # created by setup-substrate.sh from your Anthropic key
+  substrate:
+    # Reference the WorkerPool the kagent chart created (substrateWorkerPool.create=true).
+    workerPoolRef:
+      name: kagent-default
+    # Per-harness OpenClaw gateway token. For a demo, an inline literal is fine;
+    # in production use gatewayTokenSecretRef pointing at a Secret with key "token".
+    gatewayToken: test-token
+    # snapshotsConfig is omitted → kagent defaults it to
+    # gs://ate-snapshots/kagent/openclaw-demo (a LOGICAL path Substrate maps to
+    # the in-cluster rustfs S3 store — no real GCS bucket needed on kind).

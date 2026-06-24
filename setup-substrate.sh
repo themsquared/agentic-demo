@@ -142,6 +142,63 @@ fi
 ok "kubectl-ate installed ($(kubectl ate version 2>/dev/null | head -1 || echo 'version cmd unavailable, plugin works'))"
 
 ###############################################################################
+# Step 6 — Install kagent OSS + UI with the Substrate integration enabled
+#
+# This is what lets you DEPLOY AND SEE agents in the kagent UI running on
+# Substrate (the OpenClaw AgentHarness flow). It's kagent OSS v0.9.9 — NOT the
+# Enterprise build on the main cluster — installed here only.
+#
+# The substrate flags match kagent's own examples/substrate-openclaw README:
+#   controller.substrate.enabled         — turn on the AgentHarness→Substrate path
+#   controller.substrate.ateApiEndpoint  — the ate-api-server installed in Step 3
+#   substrateWorkerPool.create=true       — kagent provisions a WorkerPool
+#                                           (kagent-default) for harnesses to use
+#   substrateWorkerPool.ateomImage        — the gVisor ateom sandbox image
+#
+# A ModelConfig (default-model-config) is generated from the Anthropic key in
+# the repo's .env (OpenClaw needs an LLM). providers.default=anthropic makes
+# that the default the AgentHarness references.
+###############################################################################
+header "Step 6: Install kagent OSS + UI (Substrate integration)"
+
+# Source the main repo's .env for the Anthropic key (gitignored; same file the
+# main setup.sh uses). OpenClaw is a coding agent — it needs a real model.
+if [ -f "${SCRIPT_DIR}/.env" ]; then
+  set -a; . "${SCRIPT_DIR}/.env"; set +a
+fi
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  warn "ANTHROPIC_API_KEY not set (no .env?). The OpenClaw harness needs a model."
+  warn "Set it in .env, or the default-model-config will be created without a key."
+fi
+
+KAGENT_OSS_VERSION="${KAGENT_OSS_VERSION:-0.9.9}"
+ATEOM_VERSION="${ATEOM_VERSION:-v0.0.6}"
+
+info "Installing kagent-crds ${KAGENT_OSS_VERSION}..."
+helm --kube-context "kind-${KIND_CLUSTER_NAME}" upgrade --install kagent-crds \
+  oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds --version "${KAGENT_OSS_VERSION}" \
+  --namespace kagent --create-namespace 2>&1 | tail -3 | sed 's/^/    /'
+
+info "Installing kagent controller + UI with Substrate enabled (pulls images, 2-5 min)..."
+helm --kube-context "kind-${KIND_CLUSTER_NAME}" upgrade --install kagent \
+  oci://ghcr.io/kagent-dev/kagent/helm/kagent --version "${KAGENT_OSS_VERSION}" \
+  --namespace kagent \
+  --set providers.default=anthropic \
+  --set-string providers.anthropic.apiKey="${ANTHROPIC_API_KEY:-}" \
+  --set controller.substrate.enabled=true \
+  --set controller.substrate.ateApiEndpoint=dns:///api.ate-system.svc:443 \
+  --set controller.substrate.ateApiInsecure=true \
+  --set substrateWorkerPool.create=true \
+  --set substrateWorkerPool.ateomImage="ghcr.io/kagent-dev/substrate/ateom-gvisor:${ATEOM_VERSION}" \
+  --set ui.enabled=true \
+  --wait --timeout 8m 2>&1 | tail -6 | sed 's/^/    /'
+
+kubectl --context "kind-${KIND_CLUSTER_NAME}" rollout status deploy/kagent-controller -n kagent --timeout=240s >/dev/null 2>&1 || true
+kubectl --context "kind-${KIND_CLUSTER_NAME}" rollout status deploy/kagent-ui -n kagent --timeout=180s >/dev/null 2>&1 || true
+MC=$(kubectl --context "kind-${KIND_CLUSTER_NAME}" get modelconfig default-model-config -n kagent -o jsonpath='{.spec.model}' 2>/dev/null || echo "?")
+ok "kagent OSS + UI running; WorkerPool 'kagent-default' + default-model-config (${MC}) created"
+
+###############################################################################
 # Done
 ###############################################################################
 header "Substrate sidetrack ready"
@@ -149,6 +206,10 @@ echo -e "${BOLD}Cluster:${NC}    kind-${KIND_CLUSTER_NAME}    (separate from you
 echo -e "${BOLD}Switch:${NC}     kubectl config use-context kind-${KIND_CLUSTER_NAME}"
 echo -e "${BOLD}Demo:${NC}       ./substrate-demo.sh"
 echo -e "${BOLD}Teardown:${NC}   ./teardown-substrate.sh"
+echo ""
+echo -e "${BOLD}kagent UI (to see + deploy agents on Substrate):${NC}"
+echo "  kubectl --context kind-${KIND_CLUSTER_NAME} port-forward -n kagent svc/kagent-ui 8001:8080"
+echo "  open http://localhost:8001"
 echo ""
 echo -e "${BOLD}Main demo unchanged:${NC}"
 echo "  kubectl config use-context k3d-ai-demo"

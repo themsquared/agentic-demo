@@ -12,6 +12,7 @@
 #   Act 2 — Create an actor → STATUS_SUSPENDED → request → STATUS_RUNNING → state
 #   Act 3 — Density: 20 actors share the 5-pod WorkerPool (the "agent juggling" story)
 #   Act 4 — Pause/resume: state preserved across hibernation
+#   Act 5 — Deploy a real agent in the kagent UI: OpenClaw AgentHarness on Substrate
 #
 # Usage:
 #   ./substrate-demo.sh           # full walkthrough
@@ -25,8 +26,14 @@ CLUSTER_NAME="${SUBSTRATE_CLUSTER_NAME:-substrate-demo}"
 KCTX="kind-${CLUSTER_NAME}"
 ATE_NS="ate-system"
 DEMO_NS="ate-demo-counter"
+KAGENT_NS="kagent"
 ROUTER_LOCAL_PORT="${SUBSTRATE_ROUTER_PORT:-8000}"
+KAGENT_UI_PORT="${SUBSTRATE_KAGENT_UI_PORT:-8001}"
 ACTOR_HOST_SUFFIX=".actors.resources.substrate.ate.dev"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+MANIFESTS="${SCRIPT_DIR}/manifests"
+HARNESS_NAME="openclaw-demo"
+HARNESS_TOKEN="test-token"
 
 # Put $HOME/go/bin on PATH so kubectl-ate is found whether or not the user added it.
 export PATH="$HOME/go/bin:$PATH"
@@ -67,6 +74,16 @@ check_ok() { echo -e "  ${GREEN}✓ $*${NC}"; }
 check_fail() { echo -e "  ${RED}✗ $*${NC}"; }
 run_cmd()  { echo -e "  ${YELLOW}\$ $*${NC}"; eval "$@" 2>&1 | sed 's/^/    /'; }
 
+# Show a manifest file (boxed), like the main demo.sh. Skipped in silent mode.
+show_file() {
+  [ "$SILENT" = "true" ] && return 0
+  local f=$1; local rel="manifests/${f#"${MANIFESTS}"/}"
+  echo -e "  ${BOLD}📄 ${rel}${NC}"
+  echo -e "  ${MAGENTA}┌────────────────────────────────────────────────────────${NC}"
+  while IFS= read -r line; do echo -e "  ${MAGENTA}│${NC} ${line}"; done < "$f"
+  echo -e "  ${MAGENTA}└────────────────────────────────────────────────────────${NC}"
+}
+
 # Curl an actor through the router port-forward, return just the response body.
 hit_actor() {
   local id=$1
@@ -86,8 +103,30 @@ start_pf() {
   done
   return 1
 }
+ui_moment() {
+  [ "$SILENT" = "true" ] && return 0
+  echo ""
+  echo -e "  ${BG_BLUE}${WHITE}  SWITCH TO BROWSER  ${NC}"
+  echo -e "  ${BOLD}$*${NC}"
+  pause
+}
 stop_pf() { [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true; }
-trap stop_pf EXIT
+
+# Separate port-forward for the kagent UI (Act 5). Tracked apart from the router pf.
+UI_PF_PID=""
+start_ui_pf() {
+  lsof -ti :"${KAGENT_UI_PORT}" 2>/dev/null | xargs -r kill 2>/dev/null || true
+  kubectl --context "${KCTX}" port-forward -n "${KAGENT_NS}" svc/kagent-ui \
+    "${KAGENT_UI_PORT}:8080" >/tmp/substrate-kagent-ui-pf.log 2>&1 &
+  UI_PF_PID=$!
+  for _ in $(seq 1 20); do
+    curl -s --max-time 1 -o /dev/null "http://localhost:${KAGENT_UI_PORT}/" 2>/dev/null && return 0
+    sleep 0.5
+  done
+  return 1
+}
+stop_all_pf() { stop_pf; [ -n "$UI_PF_PID" ] && kill "$UI_PF_PID" 2>/dev/null || true; }
+trap stop_all_pf EXIT
 
 ###############################################################################
 # Pre-flight + reset
@@ -106,6 +145,13 @@ preflight() {
     check_fail "kubectl-ate not on PATH — \$HOME/go/bin needs to be there. Re-run ./setup-substrate.sh"; exit 1
   fi
   check_ok "Substrate cluster + counter demo + kubectl-ate present"
+  # kagent is only needed for Act 5. Warn (don't fail) so Acts 1-4 still run.
+  if kubectl --context "${KCTX}" get deploy kagent-controller -n "${KAGENT_NS}" >/dev/null 2>&1; then
+    check_ok "kagent OSS + UI present (Act 5 / OpenClaw available)"
+  else
+    echo -e "  ${YELLOW}▸ kagent not installed — Act 5 (OpenClaw in the UI) will be skipped.${NC}"
+    echo -e "  ${YELLOW}  Re-run ./setup-substrate.sh to add it.${NC}"
+  fi
 }
 
 # Delete all demo actors (NOT the WorkerPool or ActorTemplate — those are infra).
@@ -118,6 +164,14 @@ preflight() {
 reset_actors() {
   echo -e "${YELLOW}Clearing previously-created actors...${NC}"
   kubectl config use-context "${KCTX}" >/dev/null
+  # Remove the kagent AgentHarness first (if present) — its actors are managed by
+  # kagent, so deleting the CRD tears them down. Deleting them via kubectl-ate
+  # while the harness exists would just make kagent recreate them.
+  if kubectl --context "${KCTX}" get agentharness "${HARNESS_NAME}" -n "${KAGENT_NS}" >/dev/null 2>&1; then
+    echo "  removing AgentHarness ${HARNESS_NAME}..."
+    kubectl --context "${KCTX}" delete agentharness "${HARNESS_NAME}" -n "${KAGENT_NS}" --wait=false >/dev/null 2>&1 || true
+    sleep 3
+  fi
   # Substrate requires actors to be in STATUS_SUSPENDED before deletion.
   # Pause is a lighter-weight state (STATUS_PAUSED) that does NOT satisfy
   # delete's precondition. Use `kubectl ate suspend actor <id>` to hibernate
@@ -177,12 +231,12 @@ create_actor_fresh() {
 # Args
 ###############################################################################
 START_ACT=1
-END_ACT=4
+END_ACT=5
 for arg in "$@"; do
   case "$arg" in
     --reset) reset_actors; exit 0 ;;
     --act)   shift; START_ACT=${1:-1}; END_ACT=$START_ACT ;;
-    [1-4])   START_ACT=$arg; END_ACT=$arg ;;
+    [1-5])   START_ACT=$arg; END_ACT=$arg ;;
   esac
 done
 silent_for() {
@@ -325,6 +379,81 @@ callout "a full suspend cycle — no DB, no cold-start, no app-level checkpoint.
 pause
 fi # end Act 4
 
+# ── ACT 5 ─────────────────────────────────────────────────────────────────────
+if [ "$END_ACT" -ge 5 ]; then
+silent_for 5
+act 5 "Deploy a Real Agent in the kagent UI — OpenClaw on Substrate"
+
+scene "AgentHarness vs raw Actor"
+narrate "Acts 1-4 drove Substrate's RAW primitives (ate.dev Actors). Act 5 is the"
+narrate "product experience: a kagent AgentHarness with runtime: substrate. You"
+narrate "deploy ONE kagent resource; kagent generates the ActorTemplate + actor,"
+narrate "bakes in the model config + gateway, and surfaces it in the kagent UI."
+callout "Same Substrate isolation + suspend/resume underneath — but as a real agent."
+pause
+
+scene "The AgentHarness manifest"
+show_file "${MANIFESTS}/substrate/openclaw-agentharness.yaml"
+pause
+echo -e "  ${YELLOW}\$ kubectl apply -f manifests/substrate/openclaw-agentharness.yaml${NC}"
+kubectl --context "${KCTX}" apply -f "${MANIFESTS}/substrate/openclaw-agentharness.yaml" 2>&1 | sed 's/^/    /'
+pause
+
+scene "kagent generates the Substrate ActorTemplate + actor"
+narrate "Waiting for the harness to become Ready (kagent builds a golden snapshot,"
+narrate "then schedules the actor onto the kagent-default WorkerPool)..."
+for _ in $(seq 1 24); do
+  READY=$(kubectl --context "${KCTX}" get agentharness "${HARNESS_NAME}" -n "${KAGENT_NS}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null)
+  [ "$READY" = "True" ] && break
+  sleep 5
+done
+run_cmd "kubectl --context ${KCTX} get agentharness ${HARNESS_NAME} -n ${KAGENT_NS}"
+echo ""
+narrate "kagent auto-created an ate.dev ActorTemplate for it:"
+run_cmd "kubectl --context ${KCTX} get actortemplate ${HARNESS_NAME} -n ${KAGENT_NS}"
+echo ""
+narrate "...and the actor is running on a Substrate worker (note the ahr- prefix):"
+kubectl ate get actors 2>/dev/null | awk 'NR==1 || /openclaw/' | sed 's/^/    /'
+callout "One AgentHarness → kagent → ActorTemplate + actor on Substrate. Zero hand-written ate.dev YAML."
+pause
+
+scene "See + use it in the kagent UI"
+if start_ui_pf; then
+  check_ok "kagent UI port-forward live"
+else
+  check_fail "couldn't port-forward kagent-ui — start it manually: kubectl --context ${KCTX} port-forward -n ${KAGENT_NS} svc/kagent-ui ${KAGENT_UI_PORT}:8080"
+fi
+echo ""
+echo -e "  ${BOLD}kagent UI:${NC}      ${GREEN}http://localhost:${KAGENT_UI_PORT}${NC}"
+echo -e "  ${BOLD}The harness:${NC}    Agents → ${HARNESS_NAME}  (runtime: substrate, backend: openclaw)"
+echo ""
+narrate "Opening the harness loads the OpenClaw Control UI, proxied by kagent through"
+narrate "Substrate's atenet-router. If it asks you to connect a gateway:"
+echo ""
+echo -e "    ${BOLD}Gateway URL:${NC}   ${GREEN}http://localhost:${KAGENT_UI_PORT}/api/agentharnesses/${KAGENT_NS}/${HARNESS_NAME}/gateway/${NC}"
+echo -e "    ${DIM}(the trailing slash is REQUIRED)${NC}"
+echo -e "    ${BOLD}Gateway token:${NC} ${GREEN}${HARNESS_TOKEN}${NC}   ${DIM}(spec.substrate.gatewayToken)${NC}"
+echo ""
+# Prove the gateway proxy answers (token-authenticated). The actor may be cold
+# right after deploy — the first hit triggers a resume, so retry a few times.
+GW_CODE=000
+for _ in $(seq 1 8); do
+  GW_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+    -H "Authorization: Bearer ${HARNESS_TOKEN}" \
+    "http://localhost:${KAGENT_UI_PORT}/api/agentharnesses/${KAGENT_NS}/${HARNESS_NAME}/gateway/" 2>/dev/null || echo "000")
+  [ "$GW_CODE" = "200" ] && break
+  sleep 3
+done
+if [ "$GW_CODE" = "200" ]; then
+  check_ok "OpenClaw Control UI is being served through the gateway proxy (HTTP 200)"
+else
+  narrate "(gateway returned HTTP ${GW_CODE} — the actor may still be cold-resuming; it'll load in the browser on retry)"
+fi
+callout "A coding agent, sandboxed in gVisor on Substrate, suspend/resume-able,"
+callout "deployed and driven entirely from the kagent UI."
+ui_moment "Open http://localhost:${KAGENT_UI_PORT} → ${HARNESS_NAME}, then come back."
+fi # end Act 5
+
 ###############################################################################
 # Finale
 ###############################################################################
@@ -336,10 +465,17 @@ echo ""
 echo -e "${BOLD}What's running:${NC}"
 echo "  kind cluster:           kind-${CLUSTER_NAME}"
 echo "  Substrate control:      ate-system namespace"
-echo "  Demo pool + template:   ${DEMO_NS} (workerpool 'counter', 5 pods)"
-echo "  Actors created:         kubectl ate get actors --all-namespaces"
+echo "  Counter pool/template:  ${DEMO_NS} (workerpool 'counter', 5 pods)"
+echo "  kagent + UI:            ${KAGENT_NS} namespace (OSS, substrate-enabled)"
+echo "  OpenClaw harness:       agentharness/${HARNESS_NAME} -n ${KAGENT_NS}"
+echo "  Actors:                 kubectl ate get actors"
+echo ""
+echo -e "${BOLD}kagent UI:${NC}"
+echo "  kubectl --context ${KCTX} port-forward -n ${KAGENT_NS} svc/kagent-ui ${KAGENT_UI_PORT}:8080"
+echo "  open http://localhost:${KAGENT_UI_PORT}   →  ${HARNESS_NAME}"
 echo ""
 echo -e "${BOLD}Where the YAML lives:${NC}"
+echo "  AgentHarness:           manifests/substrate/openclaw-agentharness.yaml"
 echo "  Substrate manifests:    .substrate-src/manifests/ate-install/"
 echo "  Counter demo:           .substrate-src/demos/counter/"
 echo ""

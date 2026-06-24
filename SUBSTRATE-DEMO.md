@@ -37,9 +37,13 @@ down (21 actors on 5 pods), same shape.
 |---|---|---|
 | `kind` cluster `substrate-demo` | n/a | K8s v1.36.1 with feature gates `PodCertificateRequest`, `ClusterTrustBundle`, `ClusterTrustBundleProjection` |
 | ate-system | `ate-system` | The Substrate control plane: api-server, controller, atelet, atenet-router, dns, rustfs, valkey (6-node) |
-| `workerpools.ate.dev` `counter` | `ate-demo-counter` | 5 warm pods waiting to host actors |
+| `workerpools.ate.dev` `counter` | `ate-demo-counter` | 5 warm pods waiting to host actors (raw-primitive demo) |
 | `actortemplates.ate.dev` `counter` | `ate-demo-counter` | CLASS=gvisor (every actor sandboxed) |
-| `kubectl-ate` | local binary in `$HOME/go/bin` | CLI plugin to manage actors |
+| **kagent OSS + UI** | `kagent` | kagent v0.9.9 with `controller.substrate.enabled=true` — the layer that lets you **see + deploy agents on Substrate in a UI**. NOT the Enterprise build on the main cluster. |
+| `workerpools.ate.dev` `kagent-default` | `kagent` | the pool kagent schedules AgentHarness actors onto |
+| `modelconfigs.kagent.dev` `default-model-config` | `kagent` | Anthropic (claude-haiku-4-5), built from your `.env` key — OpenClaw's LLM |
+| `agentharnesses.kagent.dev` `openclaw-demo` | `kagent` | the OpenClaw coding agent, `runtime: substrate` (deployed by Act 5) |
+| `kubectl-ate` | local binary in `$HOME/go/bin` | CLI plugin to manage raw actors |
 
 ## Prerequisites
 
@@ -87,6 +91,27 @@ kubectl config use-context kind-substrate-demo
 | **2** Create + resume | `kubectl ate create actor my-counter-1` → `STATUS_SUSPENDED` (no pod, zero resources). First HTTP request → resumes onto a worker → returns with `preserved memory count: 1` | Cold-start under a second. Pod assigned only when needed. |
 | **3** Density | Create 20 more actors, hit each once. Total: 21 actors. Pool still 5 pods. | Multiplexing: actors are scheduled ONTO workers, not given their own pods. 4× oversubscription here; upstream demo shows 30×. |
 | **4** Suspend + resume with state | `kubectl ate suspend actor counter-2` — `STATUS_SUSPENDED`, ATEOM POD goes `<none>`. Next request transparently resumes; counter continues from where it was. | Full RAM + FS state preserved across a hibernation cycle, no app-level checkpointing. *"Instant Session Teleport"* — the upstream's headline feature. |
+| **5** Deploy a real agent in the kagent UI | `kubectl apply` a kagent **AgentHarness** (`runtime: substrate`, `backend: openclaw`). kagent generates the ActorTemplate + actor on Substrate. Open the **kagent UI** → the harness is there → the **OpenClaw Control UI** loads, proxied through Substrate's atenet-router. | This is the product experience: ONE kagent resource → a real coding agent, gVisor-sandboxed on Substrate, suspend/resume-able, driven from the UI. Acts 1–4 were the plumbing; this is what a user actually deploys. |
+
+### Act 5 — the kagent UI flow in detail
+
+After `setup-substrate.sh` (which installs kagent + UI), Act 5 deploys
+[`manifests/substrate/openclaw-agentharness.yaml`](manifests/substrate/openclaw-agentharness.yaml).
+To drive it in the browser:
+
+```bash
+kubectl --context kind-substrate-demo port-forward -n kagent svc/kagent-ui 8001:8080
+open http://localhost:8001          # → openclaw-demo
+```
+
+If the OpenClaw Control UI asks you to connect a gateway:
+
+- **Gateway URL:** `http://localhost:8001/api/agentharnesses/kagent/openclaw-demo/gateway/` (trailing slash REQUIRED)
+- **Gateway token:** `test-token` (the `spec.substrate.gatewayToken`)
+
+kagent proxies that path to the actor's OpenClaw gateway through Substrate's
+atenet-router (Envoy), keyed by the actor `Host` header. The first hit may
+cold-resume the actor (a few seconds); after that it's instant.
 
 Each act has a `scene` + a live `kubectl ate` / `curl` call. The actual cluster
 is mutated as you go; no smoke and mirrors.
@@ -163,13 +188,17 @@ Three things made coexistence too risky:
 
 ## What's NOT in this demo yet
 
-- **kagent's `AgentHarness` integration** (`spec.runtime: substrate`). The
-  Solo blog post and the cloudnativedeepdive posts focus on this. The
-  current Act 8 uses the pure-substrate counter demo to show the actor
-  lifecycle without dragging in OSS kagent's chart. If a customer asks for
-  the kagent-on-substrate flow specifically, follow up there.
 - **Multi-template / agent-secret / claude-code-multiplex** demos — those
-  exist under `.substrate-src/demos/` but aren't wired into our script.
+  exist under `.substrate-src/demos/` but aren't wired into our script. The
+  `claude-code-multiplex` one in particular (many Claude Code sessions
+  multiplexed onto a pool) is a natural follow-up to Act 5.
+- **Deploying the AgentHarness *from* the UI** (vs `kubectl apply`). Act 5
+  applies the manifest then views/uses it in the UI. kagent's UI can also
+  create harnesses directly — not scripted here.
+- **OpenClaw actually doing coding work** — Act 5 proves the agent deploys,
+  runs on Substrate, and its Control UI is reachable. Driving a real coding
+  task through it (and showing the session survive a suspend/resume) is the
+  obvious next beat.
 
 ## References
 

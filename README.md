@@ -107,14 +107,21 @@ A separate sandbox for [Agent Substrate](https://github.com/agent-substrate/subs
 "actors" onto a small pool of warm Kubernetes pods, with per-actor gVisor
 isolation and full RAM/FS state snapshots across suspend/resume cycles.
 
-Runs in **its own `kind` cluster**, does NOT touch the main k3d demo:
+Runs in **its own `kind` cluster** (with kagent OSS + UI), does NOT touch the
+main k3d demo:
 
 ```bash
-./setup-substrate.sh           # creates kind cluster + installs Substrate + counter demo
-./substrate-demo.sh            # 4 acts: model → resume → density → suspend
-./substrate-demo.sh --reset    # delete created actors, keep the pool
+./setup-substrate.sh           # kind cluster + Substrate + counter demo + kagent OSS/UI
+./substrate-demo.sh            # 5 acts: model → resume → density → suspend →
+                               #   deploy OpenClaw AgentHarness in the kagent UI
+./substrate-demo.sh --reset    # delete created actors + harness, keep the pools
 ./teardown-substrate.sh        # nuke the kind cluster
 ```
+
+Act 5 is the headline: a kagent **AgentHarness** (`runtime: substrate`,
+`backend: openclaw`) deployed and driven **from the kagent UI** — a real
+coding agent, gVisor-sandboxed on Substrate. The OpenClaw model config is
+built from your `.env` Anthropic key.
 
 See [SUBSTRATE-DEMO.md](SUBSTRATE-DEMO.md) for the runbook. Substrate is
 explicitly **pre-stable** per upstream — *"VERY early development. APIs are
