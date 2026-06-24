@@ -200,8 +200,114 @@ Three things made coexistence too risky:
   task through it (and showing the session survive a suspend/resume) is the
   obvious next beat.
 
+## Going deeper — learning from the field (AdminTurnedDevOps runbooks)
+
+[`AdminTurnedDevOps/agentic-demo-repo/substrate`](https://github.com/AdminTurnedDevOps/agentic-demo-repo/tree/main/substrate)
+(Michael Levan, Solo field engineering) is the best deep-dive on this. It's a
+**docs/runbook directory** — no apply-able YAML, every manifest is a heredoc in
+markdown — so read it for the *concepts*, not to `kubectl apply`. Here's what it
+teaches and how it maps to this sidetrack.
+
+### There are TWO ways to run Substrate — know which you're looking at
+
+| Flavor | How it's installed | CRDs / namespace | This sidetrack? |
+|---|---|---|---|
+| **Upstream agent-substrate** | `git clone agent-substrate/substrate`, `hack/install-ate.sh` (builds images with `ko`) | `ate.dev`, `ate-system` | This is what `setup-substrate.sh` Steps 1–4 use (the `hack` path) for the counter demo |
+| **kagent-packaged** | Helm OCI charts `ghcr.io/kagent-dev/substrate/helm/{substrate-crds,substrate}` + kagent with `controller.substrate.enabled=true` | same `ate.dev` / `ate-system`, plus `kagent.dev/AgentHarness` | This is what Step 6 + Act 5 use for OpenClaw |
+
+The AdminTurnedDevOps docs show **both**, and on **GKE** (for real Pod
+Certificate beta APIs + GCS snapshots). We do it all on **kind** with local
+storage — same CRDs, no cloud.
+
+### The AgentHarness Ready cascade (what Act 5's "waiting…" is actually doing)
+
+kagent reports five conditions, in this order — worth watching with `-w`:
+
+```
+kubectl --context kind-substrate-demo get agentharness openclaw-demo -n kagent \
+  -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}' -w
+```
+
+| Condition | Meaning |
+|---|---|
+| `Accepted` | kagent validated the harness + asked the backend for a sandbox |
+| `ActorTemplateReady` | kagent generated the `ate.dev/ActorTemplate` AND Substrate built its **golden snapshot** (the base image every actor restores from) |
+| `ActorReady` | a live actor (`ahr-<ns>-<name>`) is running on a worker pod |
+| `Ready` | top-level: the actor is up and routable |
+| `BootstrapReady` | kagent's post-ready bootstrap (writes openclaw.json, configures the gateway path) finished |
+
+The gateway only reliably answers **after `BootstrapReady=True`** — which is why
+Act 5 waits on it before curling.
+
+### What "suspend" really is: gVisor/runsc CRIU checkpointing
+
+When you `kubectl ate suspend actor`, Substrate's `ateom` component uses
+**runsc (gVisor) to checkpoint the actor's full memory + filesystem** and streams
+the snapshot to storage (rustfs locally; GCS on GKE). Resume restores that image
+onto *any* worker in the pool — a different pod than before, with RAM intact.
+That's the "Instant Session Teleport" claim, and it's real CRIU, not a pause.
+
+> **Alpha caveat we hit live (be honest about this in a demo):** restore is
+> flaky on `ateom-gvisor:v0.0.6`. After several suspend/resume + harness
+> recreate cycles, a restored OpenClaw process crashed with `Illegal instruction`
+> (a gVisor restore bug — CPU-feature / checkpoint mismatch), and the gateway
+> then 503s. **A FRESH actor boots fine; it's RESTORE that's fragile.** Recovery:
+> `kubectl rollout restart deploy/kagent-default-deployment -n kagent` (clean
+> worker) then recreate the harness. The counter actor (a tiny Go binary)
+> restores reliably; OpenClaw (a big process) is where it shows. This is exactly
+> the "APIs almost guaranteed to change / not production-ready" warning in
+> practice.
+
+### Ordering matters: kagent crash-loops if Substrate isn't up first
+
+The kagent controller calls `os.Exit(1)` if its configured `ateApiEndpoint`
+(`api.ate-system.svc:443`) is unreachable at startup. So **Substrate must be
+healthy before kagent starts**, or kagent crash-loops. `setup-substrate.sh`
+orders this correctly (Steps 1–4 install + wait for ate-system, Step 6 installs
+kagent). If you ever see kagent-controller CrashLoopBackOff, check ate-system first.
+
+### Operator recipe: resume an actor directly via the Substrate control-plane API
+
+You don't have to go through HTTP — you can drive `ate-api` over gRPC. This is
+straight from the AdminTurnedDevOps `resume-actor.md`. Needs `grpcurl` (not
+installed by our scripts, hence documented, not scripted):
+
+```bash
+# Mint a short-lived token for the ate-api audience:
+TOKEN=$(kubectl --context kind-substrate-demo create token kagent-controller -n kagent \
+  --audience=api.ate-system.svc --duration=15m)
+
+# Port-forward the ate-api server:
+kubectl --context kind-substrate-demo port-forward -n ate-system svc/api 8443:443 &
+
+# List actors, then resume one:
+grpcurl -insecure -H "authorization: bearer $TOKEN" localhost:8443 ateapi.Control/ListActors
+grpcurl -insecure -H "authorization: bearer $TOKEN" \
+  -d '{"actor_id":"ahr-kagent-openclaw-demo"}' \
+  localhost:8443 ateapi.Control/ResumeActor
+```
+
+(`ResumeActor` also works `-insecure` without a token on some dev installs — the
+minted-JWT form above is the auth-correct one.)
+
+### gatewayToken vs gatewayTokenSecretRef
+
+Our shipped manifest uses an inline `gatewayToken` for reliability. The runbook
+prefers `gatewayTokenSecretRef` (a Secret with key `token`) so the token isn't in
+the manifest — see the commented block in
+[`manifests/substrate/openclaw-agentharness.yaml`](manifests/substrate/openclaw-agentharness.yaml).
+Functionally identical; the only reason we don't default to it is that switching a
+*live* harness between the two forces a snapshot-rebuild + restore, which is where
+the alpha restore flakiness bites.
+
+### Second backend: `nemoclaw`
+
+The same `runtime: substrate` code path supports `backend: nemoclaw` in addition
+to `openclaw`. We demo `openclaw`; swapping `spec.backend` is the knob.
+
 ## References
 
+- **AdminTurnedDevOps field runbooks (deep dive, docs-only):** <https://github.com/AdminTurnedDevOps/agentic-demo-repo/tree/main/substrate>
 - Upstream: <https://github.com/agent-substrate/substrate>
 - Solo blog: <https://www.solo.io/blog/kagent-3-agent-substrate-a-101-installation-configuration-guide>
 - Cloud Native Deep Dive series:

@@ -45,9 +45,37 @@ spec:
     # Reference the WorkerPool the kagent chart created (substrateWorkerPool.create=true).
     workerPoolRef:
       name: kagent-default
-    # Per-harness OpenClaw gateway token. For a demo, an inline literal is fine;
-    # in production use gatewayTokenSecretRef pointing at a Secret with key "token".
+
+    # ── Gateway token ────────────────────────────────────────────────────────
+    # OpenClaw's Control-UI gateway requires a per-harness token. Two ways:
+    #
+    #   (a) inline (what we ship — simplest, reliable on a fresh boot):
     gatewayToken: test-token
-    # snapshotsConfig is omitted → kagent defaults it to
-    # gs://ate-snapshots/kagent/openclaw-demo (a LOGICAL path Substrate maps to
-    # the in-cluster rustfs S3 store — no real GCS bucket needed on kind).
+    #
+    #   (b) gatewayTokenSecretRef → a Secret with data key "token" (the pattern
+    #       Michael Levan's field runbook calls "preferred", and what you'd use
+    #       in production so the token isn't in the manifest):
+    #
+    #         kubectl create secret generic openclaw-gateway-token -n kagent \
+    #           --from-literal=token=test-token
+    #
+    #       then replace the gatewayToken line above with:
+    #         gatewayTokenSecretRef:
+    #           name: openclaw-gateway-token
+    #
+    #   Both are functionally equivalent. We default to (a) only because switching
+    #   a live harness between them forces a golden-snapshot rebuild + actor
+    #   restore, and CRIU restore on this alpha build (ateom-gvisor v0.0.6) is
+    #   flaky — see SUBSTRATE-DEMO.md "gVisor checkpoint/restore" for the
+    #   "Illegal instruction" caveat. A FRESH harness with either option is fine.
+
+    # ── Snapshots ────────────────────────────────────────────────────────────
+    # snapshotsConfig is OMITTED on purpose. kagent then defaults it to
+    # gs://ate-snapshots/kagent/openclaw-demo — but on this kind cluster that
+    # gs:// URL is a LOGICAL path that Substrate maps to the in-cluster rustfs
+    # (S3-compatible) store. NO real GCS bucket is involved.
+    #
+    # On GKE (the AdminTurnedDevOps setup.md flow), you'd set a real per-harness
+    # GCS prefix and Substrate streams CRIU snapshots there:
+    #   snapshotsConfig:
+    #     location: gs://<your-bucket>/kagent/openclaw-demo/
