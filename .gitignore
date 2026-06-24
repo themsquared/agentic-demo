@@ -11,3 +11,8 @@
 
 # ── macOS ────────────────────────────────────────────────────────────────────
 .DS_Store
+
+# Cloned upstream substrate repo (setup-substrate.sh fetches this on demand).
+# Pinned by SUBSTRATE_PIN in setup-substrate.sh.
+.substrate-src/
+.substrate-src

@@ -100,6 +100,27 @@ See [KAGENT-DEMO.md](KAGENT-DEMO.md) for the runbook. Act 3 promotes a packaged
 (container) agent whose source lives in [`agents-src/weatherwise/`](agents-src/weatherwise/);
 `setup.sh` builds that image and loads it into k3d (Docker required for Act 3).
 
+### Agent Substrate sidetrack (alpha / experimental)
+
+A separate sandbox for [Agent Substrate](https://github.com/agent-substrate/substrate)
+— the Google-adjacent open-source layer that multiplexes many agent-like
+"actors" onto a small pool of warm Kubernetes pods, with per-actor gVisor
+isolation and full RAM/FS state snapshots across suspend/resume cycles.
+
+Runs in **its own `kind` cluster**, does NOT touch the main k3d demo:
+
+```bash
+./setup-substrate.sh           # creates kind cluster + installs Substrate + counter demo
+./substrate-demo.sh            # 4 acts: model → resume → density → suspend
+./substrate-demo.sh --reset    # delete created actors, keep the pool
+./teardown-substrate.sh        # nuke the kind cluster
+```
+
+See [SUBSTRATE-DEMO.md](SUBSTRATE-DEMO.md) for the runbook. Substrate is
+explicitly **pre-stable** per upstream — *"VERY early development. APIs are
+almost guaranteed to change."* Pinned to a known-good commit in
+`setup-substrate.sh`; bump deliberately + re-validate.
+
 ## URLs (after `port-forward.sh`)
 
 | URL | What | Login |
