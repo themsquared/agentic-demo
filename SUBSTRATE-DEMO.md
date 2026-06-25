@@ -116,6 +116,42 @@ cold-resume the actor (a few seconds); after that it's instant.
 Each act has a `scene` + a live `kubectl ate` / `curl` call. The actual cluster
 is mutated as you go; no smoke and mirrors.
 
+### The reliable alternative — a declarative `SandboxAgent`
+
+OpenClaw is the headline, but its big sandbox image is the part most exposed to
+the gVisor CRIU restore flake (see "gVisor checkpoint/restore" below). If you
+want a **"chat with an agent that lives in a gVisor actor" moment that never
+flakes**, deploy the declarative `SandboxAgent` from the official kagent docs
+instead — a tiny **Go ADK** agent that restores as cleanly as the raw counter:
+
+```bash
+kubectl --context kind-substrate-demo apply -f manifests/substrate/hello-substrate-sandboxagent.yaml
+# reaches Ready (WorkloadReady) in ~1–2 min, then in the kagent UI:
+#   - pick "kagent/hello-substrate" from the agents list and chat
+#   - View → Substrate shows its per-session actor resume on a request and
+#     snapshot back to Suspended when idle
+```
+
+Two things the docs (and a live stall) taught us, both baked into
+[`hello-substrate-sandboxagent.yaml`](manifests/substrate/hello-substrate-sandboxagent.yaml):
+
+- **Go only.** `declarative.runtime` must be `go` — "the Python ADK is not
+  supported on substrate today."
+- **Worker capacity = 1 + (long-lived harnesses).** A long-lived AgentHarness
+  (`openclaw-demo`) pins one worker for its whole life. Applying this
+  SandboxAgent alongside it on a **single-worker** pool stalls at
+  `phase: ResumeGoldenActor`, with the ate-controller logging
+  `rpc error: code = FailedPrecondition desc = no free workers available`.
+  `setup-substrate.sh` now provisions the pool with **2 replicas** so the two
+  coexist. To scale a live pool:
+  `kubectl -n kagent patch workerpool kagent-default --type=merge -p '{"spec":{"replicas":2}}'`.
+
+> **Where this differs from OpenClaw:** the SandboxAgent is invoked through the
+> kagent UI's session API (which spins a per-session actor); it does **not**
+> expose the pod-backed `/api/a2a/<ns>/<name>` endpoint that k8s-runtime agents
+> do (there's no Deployment to proxy to — it's an actor). Chat is UI-driven,
+> exactly like the OpenClaw Control UI.
+
 ## Actor lifecycle (verified empirically — kubectl-ate help doesn't spell this out)
 
 ```
@@ -173,10 +209,22 @@ Deletes the kind cluster. Leaves the local docker registry container running
 
 Three things made coexistence too risky:
 
-1. **K8s feature gates** — Substrate needs `PodCertificateRequest` +
+1. **K8s feature gates** — *our* install path needs `PodCertificateRequest` +
    `ClusterTrustBundle` + `ClusterTrustBundleProjection`. Alpha in 1.34, beta
    in 1.35, off-by-default in 1.36. Our main k3d cluster is on k3s v1.33 which
    doesn't ship them.
+
+   > **Caveat — this is path-specific, not absolute.** We install Substrate via
+   > the **upstream `ko`/`hack` scripts** (`hack/install-ate-kind.sh`), which use
+   > Pod Certificate–based actor auth and therefore require those gates. The
+   > **official kagent OCI path**
+   > ([kagent.dev/docs/.../agent-substrate](https://kagent.dev/docs/kagent/examples/agent-substrate))
+   > installs substrate v0.0.6 from prebuilt Helm charts and uses
+   > **ServiceAccount-token (JWT) auth**, so a *plain* `kind create cluster` works
+   > with **no feature gates**. We kept the upstream path because it's what the raw
+   > `kubectl ate` counter demo (Acts 1–4) is built on; if you only want the
+   > kagent-managed agents, the OCI path is simpler. Either way it stays off the
+   > main k3d cluster for reason #2 below.
 2. **CRD collision** — Substrate's kagent integration uses OSS kagent v0.9+
    which ships `kagent.dev/v1alpha2` resources. Our main cluster runs kagent
    Enterprise 0.3.17 which owns the same CRD group. Installing OSS on top
@@ -307,6 +355,7 @@ to `openclaw`. We demo `openclaw`; swapping `spec.backend` is the knob.
 
 ## References
 
+- **Official kagent guide (declarative SandboxAgent path):** <https://kagent.dev/docs/kagent/examples/agent-substrate> — the simpler OCI-Helm + plain-`kind` path; source of the `hello-substrate` example and the worker-density rule.
 - **AdminTurnedDevOps field runbooks (deep dive, docs-only):** <https://github.com/AdminTurnedDevOps/agentic-demo-repo/tree/main/substrate>
 - Upstream: <https://github.com/agent-substrate/substrate>
 - Solo blog: <https://www.solo.io/blog/kagent-3-agent-substrate-a-101-installation-configuration-guide>

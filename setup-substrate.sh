@@ -153,6 +153,16 @@ ok "kubectl-ate installed ($(kubectl ate version 2>/dev/null | head -1 || echo '
 #   controller.substrate.ateApiEndpoint  — the ate-api-server installed in Step 3
 #   substrateWorkerPool.create=true       — kagent provisions a WorkerPool
 #                                           (kagent-default) for harnesses to use
+#   substrateWorkerPool.replicas=2        — size the pool to 1 + (long-lived
+#                                           AgentHarnesses). A long-lived harness
+#                                           (openclaw-demo) pins one worker slot
+#                                           for its whole life; a 2nd agent (e.g.
+#                                           the hello-substrate SandboxAgent) then
+#                                           needs a free worker to resume its
+#                                           golden actor. With only 1 worker the
+#                                           2nd stalls at ResumeGoldenActor with
+#                                           "no free workers available" — the
+#                                           density rule from the kagent docs.
 #   substrateWorkerPool.ateomImage        — the gVisor ateom sandbox image
 #
 # A ModelConfig (default-model-config) is generated from the Anthropic key in
@@ -189,6 +199,7 @@ helm --kube-context "kind-${KIND_CLUSTER_NAME}" upgrade --install kagent \
   --set controller.substrate.ateApiEndpoint=dns:///api.ate-system.svc:443 \
   --set controller.substrate.ateApiInsecure=true \
   --set substrateWorkerPool.create=true \
+  --set substrateWorkerPool.replicas=2 \
   --set substrateWorkerPool.ateomImage="ghcr.io/kagent-dev/substrate/ateom-gvisor:${ATEOM_VERSION}" \
   --set ui.enabled=true \
   --wait --timeout 8m 2>&1 | tail -6 | sed 's/^/    /'

@@ -1,0 +1,64 @@
+# hello-substrate — a declarative agent running on Agent Substrate.
+#
+# This is the path the OFFICIAL kagent docs demonstrate
+# (https://kagent.dev/docs/kagent/examples/agent-substrate), and it's the
+# RELIABLE counterpart to the OpenClaw AgentHarness:
+#
+#   - openclaw-agentharness.yaml → a full coding-agent gateway (backend: openclaw).
+#     Powerful, but its big sandbox image is subject to the gVisor CRIU
+#     "Illegal instruction" restore flake on ateom-gvisor v0.0.6 (see
+#     SUBSTRATE-DEMO.md). Lead with it, but know it's alpha.
+#
+#   - THIS SandboxAgent → a tiny Go ADK agent. Same Substrate plumbing
+#     (gVisor actor, golden snapshot, suspend/resume), but a small binary that
+#     restores cleanly every time — like the raw counter actor. If you want a
+#     "chat with an agent that lives in a gVisor actor" moment that NEVER flakes,
+#     use this one.
+#
+# Verified live on kind-substrate-demo: reaches Ready (WorkloadReady), shows up
+# in the kagent UI agents list, and appears in View → Substrate as an actor.
+#
+# ── IMPORTANT: runtime must be `go` ──────────────────────────────────────────
+# Per the kagent docs, "the Python ADK is not supported on substrate today."
+# Declarative SandboxAgents on Substrate are Go-only for now.
+#
+# ── IMPORTANT: worker capacity (the lesson that bit us live) ─────────────────
+# A long-lived AgentHarness (openclaw-demo) PINS one worker slot for its whole
+# life. A declarative SandboxAgent needs a free worker to resume its golden
+# actor. With a single-worker pool, applying this alongside openclaw-demo stalls
+# at `phase: ResumeGoldenActor` with the ate-controller logging:
+#     rpc error: code = FailedPrecondition desc = no free workers available
+# That's not a bug — it's the kagent docs' density rule: size the pool to
+#     1 + (number of long-lived AgentHarnesses).
+# setup-substrate.sh provisions the pool with 2 replicas so OpenClaw + this
+# SandboxAgent coexist. To scale an already-running pool:
+#     kubectl --context kind-substrate-demo -n kagent patch workerpool kagent-default \
+#       --type=merge -p '{"spec":{"replicas":2}}'
+#
+# Apply:
+#   kubectl --context kind-substrate-demo apply -f manifests/substrate/hello-substrate-sandboxagent.yaml
+#
+# Then in the kagent UI (kubectl port-forward -n kagent svc/kagent-ui 8001:8080):
+#   - pick "kagent/hello-substrate" from the agents list and chat with it
+#   - open View → Substrate to watch its per-session actor resume on a request
+#     and snapshot itself back to storage (Suspended) when idle
+apiVersion: kagent.dev/v1alpha2
+kind: SandboxAgent
+metadata:
+  name: hello-substrate
+  namespace: kagent
+spec:
+  type: Declarative
+  description: Tiny declarative agent running inside a substrate actor
+  declarative:
+    runtime: go                       # Go-only on Substrate (Python ADK unsupported)
+    modelConfig: default-model-config  # created by setup-substrate.sh from your .env Anthropic key
+    systemMessage: |
+      You are a friendly assistant living inside an Agent Substrate sandbox.
+      When asked who you are, say "I am hello-substrate, a Go ADK declarative
+      agent running inside a gVisor actor."
+  platform: substrate                  # vs the default kubernetes runtime
+  substrate:
+    # Reference the WorkerPool the kagent chart created (substrateWorkerPool.create=true).
+    workerPoolRef:
+      name: kagent-default
