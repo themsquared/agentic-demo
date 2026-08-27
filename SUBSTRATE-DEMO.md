@@ -3,7 +3,7 @@
 A separate, experimental demo of **Agent Substrate** (the Google-adjacent
 open-source project at [agent-substrate/substrate](https://github.com/agent-substrate/substrate)).
 Runs on its own `kind` cluster. **Does not touch the main k3d demo cluster** —
-Acts 1–7 of `./demo.sh` keep working unchanged.
+Acts 1–8 of `./demo.sh` keep working unchanged.
 
 > Substrate's own README on its maturity:
 > *"VERY early development. It is not ready for production use, and the APIs
@@ -227,9 +227,9 @@ Three things made coexistence too risky:
    > main k3d cluster for reason #2 below.
 2. **CRD collision** — Substrate's kagent integration uses OSS kagent v0.9+
    which ships `kagent.dev/v1alpha2` resources. Our main cluster runs kagent
-   Enterprise 0.3.17 which owns the same CRD group. Installing OSS on top
+   Enterprise 0.5.5 which owns the same CRD group. Installing OSS on top
    would replace our working Enterprise integration (Solo UI, AgentRegistry,
-   OBO flow — Acts 1–7).
+   OBO flow — Acts 1–8).
 3. **Substrate is explicitly pre-stable** — "APIs are almost guaranteed to
    change." Confining experimental churn to a sandboxed cluster keeps the
    demo we ship to customers stable.

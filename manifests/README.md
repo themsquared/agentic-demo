@@ -19,11 +19,12 @@ Each file is heavily commented so it stands on its own as a reference example.
 
 | Folder | What it defines | Applied in (Act) |
 |--------|-----------------|------------------|
-| `infrastructure/` | ServiceMeshController, Keycloak (+ realm), AgentGateway Gateway & Parameters, **`istiod-alias.yaml`** (lets BYO-agent waypoints fetch their mTLS cert) | setup only |
+| `infrastructure/` | ServiceMeshController, Keycloak (+ realm), AgentGateway Gateway & Parameters (incl. the `modelCatalog` reference that prices LLM traffic), **`istiod-alias.yaml`** (lets BYO-agent waypoints fetch their mTLS cert) | setup only |
 | `llm-providers/` | Anthropic + OpenAI `AgentgatewayBackend` + `HTTPRoute` | Act 1 |
 | `mcp-servers/` | Website fetcher (local), weather + GitHub-profile (composable), GitHub remote, the MCP routes, plus the `everything` server + `virtual-mcp` federation | Acts 2 & 6 |
 | `security/` | GitHub OAuth elicitation policy | Act 3 |
-| `observability/` | AgentGateway tracing policy (OTLP → bundled collector → ClickHouse → UI Tracing tab) | setup only |
+| `observability/` | AgentGateway tracing policy (OTLP → bundled collector → ClickHouse → UI Tracing **and** Cost Management tabs) | setup only |
+| `cost-management/` | Model cost catalog (`01`), virtual keys + metered route (`/metered-llm`) + apiKey/budget policy (`02`), `EnterpriseAgentgatewayBudget` (`03`) | Act 8 (also applied by setup) |
 | `kagent/` | `ModelConfig`s, `RemoteMCPServer`s, and `agents/` | Act 4 |
 | `kagent-demo/` | Numbered steps for the **kagent-focused demo** (`kagent-demo.sh`): tool servers (`kdemo-*`) + the declarative `helpdesk` agent it grows | `kagent-demo.sh` Acts 1–2 |
 | `agentregistry/` | `arctl-helper` (in-cluster arctl runner), `Runtime`, catalog `MCPServer`s + `Agent`s, `AccessPolicy`s, promotion before/after (`everything-mcp-direct`/`-promoted`), federated `mcp-gateway`; **`weatherwise-agent.yaml` + `deployments.yaml`** (promote a packaged agent → kagent runtime) | Acts 5 & 6, `kagent-demo.sh` Act 3 |
@@ -52,16 +53,48 @@ entry onto AgentGateway. Act 6 composes two documented features to achieve it:
   (URL → raw Service) vs `…-promoted.yaml` (URL → gateway). Applying the second
   over the first is the "promotion": raw/ungoverned → governed via the gateway.
 
+### Act 8 — cost management, and the order it has to go in
+
+Four things have to line up before a single dollar shows up in the UI, and each
+one silently degrades to "zero spend" rather than erroring:
+
+1. **Prices** — `cost-management/01-model-costs.yaml` (ConfigMap) referenced from
+   `infrastructure/agentgateway-parameters.yaml` via `spec.modelCatalog.sources`.
+   Apply the ConfigMap **first**. Missing/unpriced models don't fail — they add
+   `$0`, so an incomplete catalog *undercounts*. Check with
+   `agentgateway_cost_catalog_lookups_total` (`status="Exact"` = priced).
+2. **Attribution** — `cost-management/02-virtual-keys.yaml`. `metadata.id` on each
+   key becomes the `virtualKey` dimension; `metadata.user` / `metadata.group` feed
+   the `user` / `group` dimensions (defaults defined in the AGW chart's
+   `budgetDimensions.config`). Traffic without a key is grouped as
+   **Unattributed**.
+3. **Enforcement** — `cost-management/03-budgets.yaml`, switched on for a route by
+   `entBudgetEnforcement` in the policy from `02`. Compiled into the built-in
+   global rate limit service (Redis-backed; deployed by default).
+4. **The UI** — `products.agentgateway.features.cost-management=true` on the
+   management chart (set by `setup.sh`), plus the tracing policy, since spend
+   reaches the dashboard through gateway spans → collector → ClickHouse.
+
+Two honest caveats to state out loud rather than get asked about:
+
+- **Enforcement is approximate.** Token counts aren't known until the response, so
+  usage is debited after the fact — a burst can overshoot the limit slightly.
+- **Budgets fail open.** If the rate limit service is unreachable, requests are
+  allowed. Availability is chosen over a hard spend cutoff.
+
 ## Apply order (what setup.sh does)
 
 ```
 infrastructure/service-mesh-controller.yaml
 infrastructure/keycloak-realm.yaml
 infrastructure/keycloak.yaml
+cost-management/01-model-costs.yaml      (BEFORE the Parameters that reference it)
 infrastructure/agentgateway-parameters.yaml
 infrastructure/agentgateway-gateway.yaml
 llm-providers/anthropic.yaml
 llm-providers/openai.yaml
+cost-management/02-virtual-keys.yaml     (needs the OpenAI backend above)
+cost-management/03-budgets.yaml
 mcp-servers/website-fetcher.yaml
 mcp-servers/github-remote.yaml
 mcp-servers/weather-composable.yaml
@@ -114,6 +147,12 @@ just reference them by name. The secrets are:
 | `openai-api-key` | `kagent` | `$OPENAI_API_KEY` | `kagent/modelconfigs.yaml` |
 | `kagent-openai` | `kagent` | `$OPENAI_API_KEY` | built-in k8s-agent's `default-model-config` |
 | `jwt` | `kagent` | `openssl genrsa` (OBO signing key) | kagent controller |
+
+The one exception is **`cost-management/02-virtual-keys.yaml`**, which *does*
+contain literal key values (`sk-alice-demo`, `sk-bob-demo`). They're demo tokens
+for a local cluster, kept in the file so the act is self-contained and
+re-runnable. Real virtual keys are minted by the Cost Management UI (server-side,
+shown once) or by CI from a vault — never committed.
 
 To create them yourself (the script does this for you):
 
@@ -175,7 +214,7 @@ point at — so every agent's LLM and tool traffic flows through the gateway.
 |-----------|---------|--------|
 | `gateway.networking.k8s.io/v1` | `Gateway`, `HTTPRoute` | upstream Gateway API |
 | `agentgateway.dev/v1alpha1` | `AgentgatewayBackend` | AgentGateway OSS |
-| `enterpriseagentgateway.solo.io/v1alpha1` | `EnterpriseAgentgatewayBackend`, `...Policy`, `...Parameters` | AgentGateway Enterprise (composable MCP, elicitation, STS) |
+| `enterpriseagentgateway.solo.io/v1alpha1` | `EnterpriseAgentgatewayBackend`, `...Policy`, `...Parameters`, `...Budget` (short name `eagbud`, new in v2026.7.x) | AgentGateway Enterprise (composable MCP, elicitation, STS, cost controls) |
 | `kagent.dev/v1alpha2` | `Agent`, `ModelConfig`, `RemoteMCPServer` | kagent |
 | `ar.dev/v1alpha1` | `Runtime`, `MCPServer`, `Agent`, `AccessPolicy` | AgentRegistry |
 | `operator.gloo.solo.io/v1` | `ServiceMeshController` | Gloo Operator (ambient mesh) |

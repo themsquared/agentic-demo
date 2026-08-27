@@ -14,7 +14,7 @@
 #               ./port-forward.sh is active.
 #
 # Usage:
-#   ./demo.sh              # run the full interactive demo
+#   ./demo.sh              # run the full interactive demo (8 acts)
 #   ./demo.sh --reset      # just reset demo resources (clean slate)
 #   ./demo.sh --act 3      # reset, fast-forward through acts 1..2 silently (no
 #                          # prompts, no YAML walls — state is built up so act 3
@@ -227,6 +227,17 @@ reset_demo() {
   kubectl delete secret  eager-auth-keys -n "${AGW_NS}" 2>/dev/null || true
   kubectl delete configmap mcp-openapi-weather-spec -n "${AGW_NS}" 2>/dev/null || true
 
+  # Act 8 (Cost Management) resources. The metered-llm HTTPRoute is already
+  # covered by the `httproute --all` above. The model cost catalog + the
+  # modelCatalog reference on agw-params are INFRASTRUCTURE (setup.sh applies
+  # them, no act re-creates them from scratch) — so we re-apply them defensively
+  # rather than delete, same as the tracing policy.
+  kubectl delete eagbud cost-demo-budgets -n "${AGW_NS}" 2>/dev/null || true
+  kubectl delete eagpol metered-cost-controls -n "${AGW_NS}" 2>/dev/null || true
+  kubectl delete secret llm-virtual-keys -n "${AGW_NS}" 2>/dev/null || true
+  kubectl apply -f "${MANIFESTS}/cost-management/01-model-costs.yaml" >/dev/null 2>&1 || true
+  kubectl apply -f "${MANIFESTS}/infrastructure/agentgateway-parameters.yaml" >/dev/null 2>&1 || true
+
   # AgentRegistry catalog objects are NOT k8s resources — delete via arctl helper
   # if it's present (best-effort; demo re-applies are idempotent upserts anyway).
   if kubectl get deploy arctl-helper -n "${AR_NS}" >/dev/null 2>&1; then
@@ -261,17 +272,17 @@ preflight() {
 ###############################################################################
 # Parse args
 ###############################################################################
-# With no --act flag we run all seven acts live (START_ACT=1, END_ACT=7).
+# With no --act flag we run all eight acts live (START_ACT=1, END_ACT=8).
 # With --act N we reset, FAST-FORWARD through acts 1..N-1 silently (no prompts,
 # no YAML walls, but apply_file/kubectl still execute so the cluster has the
 # state act N expects), then play act N live and stop.
 START_ACT=1
-END_ACT=7
+END_ACT=8
 for arg in "$@"; do
   case "$arg" in
     --reset) reset_demo; exit 0 ;;
     --act)   shift; START_ACT=${1:-1}; END_ACT=$START_ACT ;;
-    [1-7])   START_ACT=$arg; END_ACT=$arg ;;
+    [1-8])   START_ACT=$arg; END_ACT=$arg ;;
   esac
 done
 # Helper: call at the start of each act block to enter/leave silent mode.
@@ -1103,6 +1114,162 @@ ui_moment "Open both URLs in the Inspector, compare the Tools tabs, then come ba
 fi # end ACT 7
 
 ###############################################################################
+#
+#  ACT 8 — Cost Management: attribute, price, cap
+#
+###############################################################################
+if [ "$END_ACT" -ge 8 ]; then
+silent_for 8
+act 8 "Cost Management — Attribute, Price, and Cap LLM Spend"
+
+narrate "Every act so far governed WHAT agents can do. This one governs what"
+narrate "they're allowed to SPEND — the question that actually decides whether"
+narrate "an agent platform gets a budget next year."
+narrate ""
+narrate "  1. Model cost catalog — teach the gateway what a token costs"
+narrate "  2. Virtual keys       — attribute every request to a user and a team"
+narrate "  3. Priced telemetry   — realized USD on every call, in metrics + traces"
+narrate "  4. Budgets            — token and dollar caps, Audit then Block (429)"
+narrate "  5. The FinOps UI      — spend by model/user/team, catalog, budgets"
+narrate ""
+callout "The gateway is the only place this can be done once, for every agent,"
+callout "every framework, and every provider at the same time."
+pause
+
+# ── 8.1 Model cost catalog ────────────────────────────────────────────────────
+scene "Model cost catalog: from 'tokens' to dollars"
+narrate "The gateway has always counted tokens. Counting is not costing — without"
+narrate "prices, every spend number is \$0. The catalog is provider → model →"
+narrate "rates, in USD per 1,000,000 tokens, as exact decimal strings."
+show_file "${MANIFESTS}/cost-management/01-model-costs.yaml"
+pause
+apply_file "${MANIFESTS}/cost-management/01-model-costs.yaml"
+narrate ""
+narrate "The Gateway picks it up through modelCatalog.sources on the"
+narrate "EnterpriseAgentgatewayParameters it already references:"
+show_file "${MANIFESTS}/infrastructure/agentgateway-parameters.yaml"
+apply_file "${MANIFESTS}/infrastructure/agentgateway-parameters.yaml"
+kubectl rollout status deploy/agentgateway-proxy -n "${AGW_NS}" --timeout=120s 2>&1 | sed 's/^/    /' || true
+check_ok "Catalog loaded — every LLM request now carries llm.cost (realized USD)"
+callout "Rates here are illustrative. For real ones: agctl costs import --providers openai,anthropic"
+pause
+
+# ── 8.2 Virtual keys ──────────────────────────────────────────────────────────
+scene "Virtual keys: who spent it, and on whose budget"
+narrate "A virtual key is a gateway-issued token that carries attribution."
+narrate "The caller sends one key; the gateway resolves it into cost dimensions"
+narrate "(virtualKey / user / group) and never lets the real provider key out."
+narrate ""
+narrate "alice → group platform-eng.  bob → group data-science."
+narrate "Both on a new /metered-llm route, so /openai and /anthropic stay untouched."
+show_file "${MANIFESTS}/cost-management/02-virtual-keys.yaml"
+pause
+apply_file "${MANIFESTS}/cost-management/02-virtual-keys.yaml"
+check_ok "Virtual key set + metered route + apiKey/budget policy applied"
+sleep 4
+pause
+
+scene "Test: unattributed spend is refused, attributed spend is allowed"
+show_curl "curl -s localhost:8081/metered-llm/v1/chat/completions" \
+  "-H 'content-type: application/json'" \
+  "-H 'Authorization: Bearer sk-alice-demo'" \
+  "-d '{\"model\":\"gpt-4o\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'"
+pause
+METERED_BODY='{"model":"gpt-4o","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
+printf "  no virtual key:     HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 localhost:8081/metered-llm/v1/chat/completions -H 'content-type: application/json' -d "$METERED_BODY")"
+printf "  alice's key:        HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 localhost:8081/metered-llm/v1/chat/completions -H 'content-type: application/json' -H 'Authorization: Bearer sk-alice-demo' -d "$METERED_BODY")"
+printf "  bob's key:          HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 localhost:8081/metered-llm/v1/chat/completions -H 'content-type: application/json' -H 'Authorization: Bearer sk-bob-demo' -d "$METERED_BODY")"
+callout "401 for anonymous traffic — on this route, spend that can't be attributed"
+callout "doesn't happen at all. Unkeyed traffic elsewhere shows as 'Unattributed'."
+pause
+
+# ── 8.3 Priced telemetry ──────────────────────────────────────────────────────
+scene "Priced telemetry: proof the pricing is actually landing"
+narrate "Two things to check on the proxy's metrics port. Token usage (always"
+narrate "there), and catalog lookups — the status label tells you whether a model"
+narrate "was priced (Exact) or silently free (Missing / Unpriced / NoCatalog)."
+echo ""
+echo -e "  ${YELLOW}\$ kubectl port-forward deploy/agentgateway-proxy -n ${AGW_NS} 15020:15020 &${NC}"
+echo -e "  ${YELLOW}\$ curl -s localhost:15020/metrics | grep -E 'cost_catalog_lookups|gen_ai_client_token_usage_sum'${NC}"
+pause
+kubectl port-forward "deploy/agentgateway-proxy" -n "${AGW_NS}" 15020:15020 >/dev/null 2>&1 &
+PF_METRICS=$!
+sleep 3
+curl -s --max-time 10 localhost:15020/metrics 2>/dev/null \
+  | grep -E 'agentgateway_cost_catalog_lookups_total|agentgateway_gen_ai_client_token_usage_sum' \
+  | head -12 | sed 's/^/    /' || true
+kill "$PF_METRICS" 2>/dev/null || true
+callout "status=\"Exact\" means the request was priced from the catalog. An incomplete"
+callout "catalog doesn't error — it undercounts. That's the number FinOps must watch."
+pause
+
+# ── 8.4 Budgets ───────────────────────────────────────────────────────────────
+scene "Budgets: token and dollar caps, in Audit or Block"
+narrate "One resource, three entries. Per-key token ceiling in Block mode (the"
+narrate "runaway-agent stop), plus a team dollar cap and a per-model dollar cap"
+narrate "in Audit mode — recorded and visible, but nobody gets refused."
+narrate ""
+narrate "subject.virtualKey: \"*\" gives EACH key its own bucket, so alice running"
+narrate "dry has no effect on bob. The controller compiles these into the built-in"
+narrate "global rate limit service (Redis-backed, already running)."
+show_file "${MANIFESTS}/cost-management/03-budgets.yaml"
+pause
+apply_file "${MANIFESTS}/cost-management/03-budgets.yaml"
+check_ok "Budgets applied — 100 tokens/day per virtual key, Block on breach"
+sleep 5
+pause
+
+scene "Watch alice hit the ceiling — then watch bob be unaffected"
+narrate "100 tokens/day is deliberately tiny so it trips live. Measured on a real"
+narrate "cluster: each 'hi' costs ~17 tokens (8 in + 9 out), so alice gets six 200s"
+narrate "and flips on the SEVENTH. Usage debits AFTER the response (token counts"
+narrate "aren't known before), so enforcement is approximate — a burst can overshoot."
+echo ""
+# Loop to 10 with an early break: the flip lands on ~#7, and a loop that stops at
+# 6 shows six 200s and no 429 — the exact opposite of the point being made.
+for i in $(seq 1 10); do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 localhost:8081/metered-llm/v1/chat/completions -H 'content-type: application/json' -H 'Authorization: Bearer sk-alice-demo' -d "$METERED_BODY")
+  printf "  alice request %s:    HTTP %s\n" "$i" "$code"
+  [ "$code" = "429" ] && break
+  sleep 1
+done
+echo ""
+printf "  bob (own bucket):   HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 localhost:8081/metered-llm/v1/chat/completions -H 'content-type: application/json' -H 'Authorization: Bearer sk-bob-demo' -d "$METERED_BODY")"
+printf "  /openai (no budget policy):  HTTP %s\n" "$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 localhost:8081/openai/v1/chat/completions -H 'content-type: application/json' -d "$METERED_BODY")"
+callout "429 at the gateway once alice's daily tokens are gone — no provider call,"
+callout "no spend. bob and the unmetered route are untouched."
+narrate ""
+narrate "Say the second caveat out loud before a customer asks: budgets FAIL OPEN."
+narrate "If the rate limit service is unreachable, requests are allowed through —"
+narrate "availability over a hard spend cutoff."
+pause
+
+# ── 8.5 The FinOps UI ─────────────────────────────────────────────────────────
+scene "Cost Management in the UI: the view a FinOps team actually wants"
+narrate "Enabled with one helm value on the management chart (setup.sh sets it):"
+echo ""
+echo -e "  ${YELLOW}--set 'products.agentgateway.features.cost-management=true'${NC}"
+echo -e "  ${YELLOW}--set 'products.agentgateway.features.cost-management-writes=true'   ${DIM}# false = read-only${NC}"
+echo ""
+narrate "Off by default because the ClickHouse reads behind the spend charts aren't"
+narrate "optimized yet — fine at demo scale, an opt-in decision for production."
+narrate ""
+narrate "Five pages, all fed by what we just applied:"
+echo ""
+echo -e "    ${BOLD}Dashboard${NC}          spend + spend-over-time, filtered by provider,"
+echo -e "                       model, group, user or virtual key — with CSV export"
+echo -e "    ${BOLD}Model Cost Catalog${NC} the per-token rates from 01-model-costs.yaml"
+echo -e "    ${BOLD}Budgets${NC}            the three entries above, with usage against each"
+echo -e "    ${BOLD}Dimensions${NC}         the attribution hierarchy (group → user) and"
+echo -e "                       custom attributes"
+echo -e "    ${BOLD}Virtual API Keys${NC}   alice and bob, with their metadata"
+echo ""
+callout "Spend data arrives via the tracing pipeline (gateway → collector →"
+callout "ClickHouse), so give it a few seconds after the traffic above."
+ui_moment "http://localhost:9090/age/ → Cost Management. Filter by group: alice's calls under platform-eng, bob's under data-science."
+fi # end ACT 8
+
+###############################################################################
 #  FINALE
 ###############################################################################
 clear
@@ -1137,6 +1304,12 @@ echo "    Prompt Policies — PII masking, system-message injection, defaults"
 echo "    OpenAPI → MCP — auto-generate tools from a REST spec, zero code"
 echo "    Code Mode — one script tool instead of N tool round-trips"
 echo ""
+echo -e "  ${GREEN}Cost Management${NC}"
+echo "    Model cost catalog — per-token USD rates loaded onto the Gateway"
+echo "    Virtual keys — every request attributed to a user and a team"
+echo "    Budgets — per-key token cap (Block/429) + team & model USD caps (Audit)"
+echo "    Cost dashboard — spend by provider/model/group/user/key, with CSV export"
+echo ""
 echo -e "  ${GREEN}Ambient Mesh${NC}"
 echo "    mTLS encryption for all pod-to-pod traffic"
 echo ""
@@ -1153,12 +1326,13 @@ echo -e "${BOLD}Every manifest is in:${NC} ${GREEN}manifests/${NC}  (browse + re
 echo ""
 echo -e "${BOLD}URLs:${NC}"
 echo -e "  Solo Enterprise UI:  ${GREEN}http://localhost:9090${NC}  (demo/demo)"
-echo -e "  Keycloak Admin:      ${GREEN}http://localhost:9091${NC}  (admin/admin)"
+echo -e "  Cost Management:     ${GREEN}http://localhost:9090/age/${NC}  → Cost Management"
+echo -e "  Keycloak Admin:      ${GREEN}http://localhost:8080${NC}  (admin/admin)"
 echo -e "  AgentGateway Proxy:  ${GREEN}http://localhost:8081${NC}"
 echo -e "  AgentRegistry API:   ${GREEN}http://localhost:12121${NC}"
 echo ""
 echo -e "${BOLD}Replay:${NC}"
-echo "  ./demo.sh          # full walkthrough"
+echo "  ./demo.sh          # full walkthrough (8 acts)"
 echo "  ./demo.sh --act 3  # reset, fast-forward acts 1..2 silently, then play act 3 live"
 echo "  ./demo.sh --reset  # clean slate"
 echo ""

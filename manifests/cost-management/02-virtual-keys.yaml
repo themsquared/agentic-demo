@@ -1,0 +1,138 @@
+# Act 8 / Scene 2 — Virtual keys: who is spending, and on whose budget.
+# https://docs.solo.io/agentgateway/latest/llm/cost-controls/virtual-keys/
+#
+# A "virtual key" is a gateway-issued API key that carries attribution metadata.
+# The caller sends one key; the gateway resolves it into the cost dimensions that
+# budgets and the Cost Management dashboard group by. No provider key ever leaves
+# the gateway — Anthropic still sees only the real anthropic-secret.
+#
+# Three pieces:
+#   1. Secret llm-virtual-keys — the key set. The label
+#      `agentgateway.solo.io/virtual-key-set` is what the policy's secretSelector
+#      matches, and it's also what backs the UI's "Virtual API Keys" tab.
+#   2. HTTPRoute /metered-llm — a separate route on the existing OpenAI backend,
+#      so the demo's plain /openai and /anthropic routes stay unmetered and open.
+#   3. EnterpriseAgentgatewayPolicy — apiKeyAuthentication (identify the caller)
+#      + entBudgetEnforcement (make budgets apply to this route).
+#
+# WHY OpenAI AND NOT ANTHROPIC (deliberate, learned the hard way):
+# Budgets debit token usage from the RESPONSE. A provider that refuses the request
+# (expired key, no credit, rate limit) produces no usage, so nothing is ever
+# debited and the budget NEVER trips — Act 8's 429 money-shot silently becomes a
+# row of 400s. Pinning the metered route to a second provider means the FinOps act
+# doesn't die when one provider's billing does. To meter Claude instead, swap the
+# backendRef name to `anthropic` and change the model in the requests to
+# claude-sonnet-4-6 (it's already priced in 01-model-costs.yaml).
+#
+# How metadata becomes dimensions (defaults from the chart's budgetDimensions):
+#   virtualKey ← apiKey.id
+#   user       ← coalesce(apiKey.user, apiKey.name, apiKey.owner, jwt.sub, jwt.email, ...)
+#   group      ← coalesce(jwt.group, apiKey.group)
+#   model / provider are built in — no expression needed.
+# Add your own (cost centre, team, tenant) as CEL in the management chart's
+# `budgetDimensions.config.attributes`; the controller syncs the dimensions
+# ConfigMap out to the gateway namespaces.
+#
+# Traffic with no virtual key still shows up in the dashboard — grouped as
+# "Unattributed". That's the number to drive to zero.
+#
+# Verify (after apply) — both of these were run against a live cluster:
+#   curl -s localhost:8081/metered-llm/v1/chat/completions \
+#     -H 'content-type: application/json' \
+#     -H 'Authorization: Bearer sk-alice-demo' \
+#     -d '{"model":"gpt-4o","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
+#   # → 200, and the request is attributed to virtualKey=alice, user=alice,
+#   #   group=platform-eng
+#
+#   curl -i localhost:8081/metered-llm/v1/chat/completions ...   # no key
+#   # → 401 at the gateway (mode: Strict — unattributable spend is refused)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: llm-virtual-keys
+  namespace: agentgateway-system
+  labels:
+    # Matched by the policy's secretSelector below, and by the Cost Management UI.
+    agentgateway.solo.io/virtual-key-set: demo
+type: Opaque
+stringData:
+  # One entry per key. `key` is the literal bearer token the caller sends;
+  # `metadata.id` is what the virtualKey dimension resolves to.
+  # Real deployments mint these from the UI or CI (never commit them) — literal
+  # values here so the act is self-contained and re-runnable.
+  alice: |
+    {
+      "key": "sk-alice-demo",
+      "metadata": {
+        "id": "alice",
+        "user": "alice",
+        "group": "platform-eng"
+      }
+    }
+  bob: |
+    {
+      "key": "sk-bob-demo",
+      "metadata": {
+        "id": "bob",
+        "user": "bob",
+        "group": "data-science"
+      }
+    }
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: metered-llm
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /metered-llm
+    filters:
+    # Upstream sees /v1/chat/completions, not /metered-llm/v1/...
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        remove: [Origin, Referer]
+    backendRefs:
+    # Swap to `anthropic` to meter Claude instead — see the header note on why
+    # this deliberately isn't Anthropic.
+    - name: openai
+      namespace: agentgateway-system
+      group: agentgateway.dev
+      kind: AgentgatewayBackend
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: metered-cost-controls
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: metered-llm
+  traffic:
+    apiKeyAuthentication:
+      # Strict = a valid virtual key is REQUIRED. That's deliberate: it's what
+      # makes "unattributed spend" impossible on this route rather than merely
+      # visible. Use Optional/Permissive while onboarding existing callers.
+      mode: Strict
+      # Default key location is `Authorization: Bearer <key>` — no `location`
+      # block needed. Set one to read from another header, cookie, or query param.
+      secretSelector:
+        matchLabels:
+          agentgateway.solo.io/virtual-key-set: demo
+    # Turns budget enforcement on for this route. Empty = discover budgets in the
+    # policy's own namespace. Add discovery.namespaces.from: Selector to let teams
+    # own their own EnterpriseAgentgatewayBudget resources in their namespaces.
+    entBudgetEnforcement: {}

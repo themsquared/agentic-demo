@@ -50,7 +50,17 @@ fi
 
 # Everything below uses ${VAR:-default} so .env can override any of them.
 CLUSTER_NAME="${CLUSTER_NAME:-ai-demo}"
-AGW_VERSION="${AGW_VERSION:-v2026.6.1}"
+# v2026.8.2 is the newest published AgentGateway Enterprise chart. Checked before
+# pinning: 8.2 ships the IDENTICAL CRD set as 8.0 (EnterpriseAgentgatewayBudget
+# included), keeps the budgetDimensions defaults, and every field this demo's
+# manifests use still validates against its schemas — so the cost-management
+# story (Act 8) is intact.
+#
+# Heads-up for whoever bumps this next: docs.solo.io/agentgateway "latest" has
+# been lagging the published charts, so the docs may describe an older release
+# than the one you are installing. v2026.8.0 is the previous pin and v2026.7.1
+# the last one whose docs matched — either is a clean fallback.
+AGW_VERSION="${AGW_VERSION:-v2026.8.2}"
 GLOO_OPERATOR_VERSION="${GLOO_OPERATOR_VERSION:-0.5.2}"
 ISTIO_VERSION="${ISTIO_VERSION:-1.30.0}"
 GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.5.0}"
@@ -60,8 +70,8 @@ AGW_NS="${AGW_NS:-agentgateway-system}"
 MESH_NS="${MESH_NS:-gloo-mesh}"
 ISTIO_NS="${ISTIO_NS:-istio-system}"
 KC_NS="${KC_NS:-keycloak}"
-KAGENT_ENT_VERSION="${KAGENT_ENT_VERSION:-0.3.17}"
-AR_VERSION="${AR_VERSION:-2026.5.4}"
+KAGENT_ENT_VERSION="${KAGENT_ENT_VERSION:-0.5.5}"
+AR_VERSION="${AR_VERSION:-2026.8.0}"
 KAGENT_NS="${KAGENT_NS:-kagent}"
 AR_NS="${AR_NS:-agentregistry-system}"
 KEYCLOAK_ISSUER_INTERNAL="${KEYCLOAK_ISSUER_INTERNAL:-http://keycloak.keycloak.svc.cluster.local:8080/realms/agentgateway}"
@@ -298,9 +308,35 @@ ok "Gloo Operator installed"
 info "Creating ServiceMeshController for ambient mode..."
 kubectl apply -f "${MANIFESTS}/infrastructure/service-mesh-controller.yaml"
 
-info "Waiting for Istio components to come up (this takes ~2 minutes)..."
-sleep 15
-kubectl wait --for=condition=Available deployment -l app=istiod -n "${ISTIO_NS}" --timeout=300s 2>/dev/null || true
+info "Waiting for Istio components to come up (this takes ~2-6 minutes)..."
+# The ServiceMeshController creates the istio-system namespace and the istiod
+# deployment ASYNCHRONOUSLY, so we must wait for the OBJECTS TO EXIST before
+# waiting on their conditions. `kubectl wait` against a missing namespace or an
+# unmatched label selector does NOT block — it fails immediately, which made the
+# old `--timeout=300s ... || true` a no-op and let the script race ahead to the
+# istiod-alias apply below, which then died on `namespaces "istio-system" not
+# found`. Under `set -e` that aborted the whole install at Step 4.
+wait_for_object() {
+  local desc=$1 timeout=$2; shift 2
+  local deadline=$((SECONDS + timeout))
+  until "$@" >/dev/null 2>&1; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      warn "${desc} did not appear within ${timeout}s"
+      return 1
+    fi
+    sleep 5
+  done
+  info "${desc} exists"
+}
+
+wait_for_object "namespace ${ISTIO_NS}" 300 kubectl get namespace "${ISTIO_NS}"
+wait_for_object "istiod deployment" 300 \
+  bash -c "kubectl get deployment -l app=istiod -n '${ISTIO_NS}' -o name | grep -q ."
+
+# Now the conditions are meaningful. Image pulls on a cold k3d node are slow, so
+# be generous — this is the long pole of the whole install.
+kubectl wait --for=condition=Available deployment -l app=istiod -n "${ISTIO_NS}" --timeout=600s 2>/dev/null || \
+  warn "istiod not Available yet — continuing (ambient may lag)"
 wait_for_pods "${ISTIO_NS}" 300
 
 # istiod alias — lets ambient WAYPOINTS fetch their mTLS cert. Solo's istiod is
@@ -309,8 +345,19 @@ wait_for_pods "${ISTIO_NS}" 300
 # waypoints get no cert, and any waypoint-fronted workload is unreachable. Only
 # BYO agents (AgentRegistry-promoted) get waypoints, so this is what makes the
 # kagent-demo Act 3 promotion reachable in-mesh. See manifests for the full note.
-kubectl apply -f "${MANIFESTS}/infrastructure/istiod-alias.yaml"
-ok "Solo Ambient Mesh is running"
+#
+# Guarded: this is a nice-to-have for waypoint-fronted BYO agents, NOT a
+# prerequisite for the main demo. It used to be an unguarded apply, which meant a
+# slow mesh rollout took the ENTIRE install down with it (set -e). Now a missing
+# namespace warns and moves on, and the re-run command is printed.
+if kubectl get namespace "${ISTIO_NS}" >/dev/null 2>&1; then
+  kubectl apply -f "${MANIFESTS}/infrastructure/istiod-alias.yaml"
+  ok "Solo Ambient Mesh is running (istiod alias applied)"
+else
+  warn "${ISTIO_NS} namespace absent — skipped istiod-alias.yaml."
+  warn "Ambient waypoints (kagent-demo Act 3) need it. Re-apply once the mesh is up:"
+  warn "  kubectl apply -f manifests/infrastructure/istiod-alias.yaml"
+fi
 
 ###############################################################################
 # Step 5 — Deploy Keycloak (OIDC Provider)
@@ -345,6 +392,22 @@ helm upgrade -i enterprise-agentgateway-crds \
   --namespace "${AGW_NS}" \
   --version "${AGW_VERSION}"
 
+# DEPRECATION (v2026.7.x, not yet a break): the singular
+# tokenExchange.{subjectValidator,actorValidator,apiValidator} keys below are
+# deprecated in favour of list-valued {subjectValidators,actorValidators,apiValidators}.
+# Per the chart's own values.yaml: "a token is accepted if any validator in its
+# list accepts it, and a set singular key is tried first" — so the flags here
+# still work on v2026.7.1. They're kept because this is the path that's actually
+# been validated end-to-end for the elicitation/OBO showpiece (Act 3 + DEMO.md §5),
+# and the plural form routes through different machinery (a mounted ConfigMap
+# instead of the inline env JSON). Migrate deliberately, then re-verify OBO:
+#   --set "tokenExchange.subjectValidators[0].validatorType=remote" \
+#   --set "tokenExchange.subjectValidators[0].remoteConfig.url=${KEYCLOAK_JWKS_URI}" \
+#   --set "tokenExchange.actorValidators[0].validatorType=k8s" \
+#   --set "tokenExchange.apiValidators[0].validatorType=remote" \
+#   --set "tokenExchange.apiValidators[0].remoteConfig.url=${KEYCLOAK_JWKS_URI}" \
+# (tokenExchange.issuer / .tokenExpiration are unaffected — they still reach the
+# binary through the inline KGW_AGENTGATEWAY_TOKEN_EXCHANGE_CONFIG env JSON.)
 info "Installing AgentGateway control plane (token-exchange wired to Keycloak)..."
 helm upgrade -i enterprise-agentgateway \
   oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway \
@@ -370,6 +433,11 @@ ok "AgentGateway control plane is running"
 ###############################################################################
 header "Step 7: Create Gateway Resource"
 
+# Model cost catalog FIRST: agentgateway-parameters.yaml references this ConfigMap
+# via spec.modelCatalog.sources, so the proxy picks up per-token prices on its
+# first reconcile instead of a later one. Without it the gateway counts tokens but
+# reports $0 spend everywhere (demo.sh Act 8 / Cost Management UI).
+kubectl apply -f "${MANIFESTS}/cost-management/01-model-costs.yaml"
 kubectl apply -f "${MANIFESTS}/infrastructure/agentgateway-parameters.yaml"
 kubectl apply -f "${MANIFESTS}/infrastructure/agentgateway-gateway.yaml"
 
@@ -404,6 +472,15 @@ ok "OpenAI provider configured (gpt-4o)"
 info "Applying LLM retry policies..."
 kubectl apply -f "${MANIFESTS}/observability/llm-retry-policy.yaml"
 ok "LLM retry policies applied (3 attempts, 1s backoff, 429/5xx/529)"
+
+# Cost management: virtual keys (attribution) + budgets (enforcement) on the
+# /metered-llm route. The model cost catalog went in at Step 7 — these need
+# the Anthropic backend above, so they land here. demo.sh Act 8 re-applies the
+# same files live; the Cost Management UI tab reads all of it.
+info "Applying cost management (virtual keys + budgets)..."
+kubectl apply -f "${MANIFESTS}/cost-management/02-virtual-keys.yaml"
+kubectl apply -f "${MANIFESTS}/cost-management/03-budgets.yaml"
+ok "Virtual keys (alice/bob) + budgets applied — /metered-llm is metered"
 
 ###############################################################################
 # Step 9 — MCP Server 1: Website Fetcher (local K8s)
@@ -520,6 +597,17 @@ ok "OBO RSA key stored as secret 'jwt' in ${KAGENT_NS}"
 ###############################################################################
 header "Step 13: Install kagent Enterprise"
 
+# `products` in the management chart is only {agentgateway, kagent, mesh} — there
+# is no products.agentregistry toggle (there never was; the old --set here was a
+# silent no-op). The AgentRegistry UI comes from the separate
+# agentregistry-enterprise chart installed in Step 14.
+#
+# products.agentgateway.features.cost-management turns on the Cost Management
+# section of the UI (spend dashboard, model cost catalog, budgets, dimensions,
+# virtual API keys). It ships OFF by default because the ClickHouse reads behind
+# the spend charts aren't optimized yet — fine at demo scale, opt-in for prod.
+# cost-management-writes=true lets the UI create budgets/dimensions/virtual keys;
+# set it false for a read-only FinOps view.
 info "Installing kagent management plane..."
 helm upgrade -i kagent-mgmt \
   oci://us-docker.pkg.dev/solo-public/solo-enterprise-helm/charts/management \
@@ -527,9 +615,10 @@ helm upgrade -i kagent-mgmt \
   --version "${KAGENT_ENT_VERSION}" \
   --set cluster=mgmt-cluster \
   --set products.kagent.enabled=true \
-  --set products.agentregistry.enabled=true \
   --set products.agentgateway.enabled=true \
   --set "products.agentgateway.namespace=${AGW_NS}" \
+  --set 'products.agentgateway.features.cost-management=true' \
+  --set 'products.agentgateway.features.cost-management-writes=true' \
   --set-string "licensing.licenseKey=${KAGENT_LICENSE_KEY}" \
   --set-string "oidc.issuer=${KEYCLOAK_ISSUER_INTERNAL}" \
   --set-string "ui.backend.oidc.clientId=kagent-backend" \
@@ -542,13 +631,18 @@ helm upgrade --install kagent-crds \
   -n "${KAGENT_NS}" \
   --version "${KAGENT_ENT_VERSION}"
 
+# Chart rename in kagent Enterprise 0.5.x: the built-in agents moved from
+# `agents.<name>.enabled` to top-level subchart conditions `<name>.enabled`
+# (Chart.yaml: `condition: k8s-agent.enabled`). The old key is not an error —
+# helm accepts unknown --set values silently, so the symptom was just a missing
+# k8s-agent. Verified against kagent-enterprise 0.5.4's Chart.yaml.
 info "Installing kagent controller..."
 helm upgrade -i kagent \
   oci://us-docker.pkg.dev/solo-public/kagent-enterprise-helm/charts/kagent-enterprise \
   -n "${KAGENT_NS}" \
   --version "${KAGENT_ENT_VERSION}" \
   --set-string "licensing.licenseKey=${KAGENT_LICENSE_KEY}" \
-  --set agents.k8s-agent.enabled=true \
+  --set k8s-agent.enabled=true \
   --set kagent-tools.enabled=true \
   --set kmcp.licensing.createSecret=false \
   --set-string "oidc.issuer=${KEYCLOAK_ISSUER_INTERNAL}" \
@@ -659,6 +753,15 @@ header "Step 19: Register in AgentRegistry"
 # in-cluster Keycloak. We run arctl IN-CLUSTER via a helper pod (see
 # manifests/agentregistry/arctl-helper.yaml) so the issuer resolves and matches.
 # Non-fatal: the rest of the stack works even if this step has trouble.
+# AR 2026.7.x requires config.auth.oidc on Kagent runtimes (see the long note in
+# manifests/agentregistry/runtime.yaml). AR reads the client secret from a Secret
+# in its OWN namespace, so create it before registering the catalog — otherwise
+# Runtime/kagent is rejected and Act 5 has nowhere to deploy agents.
+info "Creating AgentRegistry→kagent OIDC secret (runtime auth)..."
+kubectl create secret generic kagent-oidc -n "${AR_NS}" \
+  --from-literal=clientSecret="${AR_BACKEND_SECRET}" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
 info "Deploying in-cluster arctl helper..."
 kubectl apply -f "${MANIFESTS}/agentregistry/arctl-helper.yaml"
 
@@ -693,6 +796,13 @@ echo ""
 echo -e "${BOLD}LLM Providers (via AgentGateway):${NC}"
 echo "  • Anthropic (Claude Sonnet 4) → /anthropic"
 echo "  • OpenAI (gpt-4o)             → /openai"
+echo "  • Metered (OpenAI)            → /metered-llm  (virtual key required)"
+echo ""
+echo -e "${BOLD}Cost Management:${NC}"
+echo "  • Model cost catalog     — per-token USD rates on the Gateway"
+echo "  • Virtual keys           — sk-alice-demo (platform-eng) / sk-bob-demo (data-science)"
+echo "  • Budgets                — 100 tok/day per key (Block) + team/model USD caps (Audit)"
+echo "  • UI                     — Cost Management tab at http://localhost:9090/age/"
 echo ""
 echo -e "${BOLD}MCP Servers (via AgentGateway):${NC}"
 echo "  • Website Fetcher (local)          → /mcp/website"
@@ -720,6 +830,7 @@ echo "  3. OBO/Elicitation: github-assistant → AGW → STS token exchange → 
 echo "  4. A2A Protocol:   orchestrator-agent delegates to specialist agents"
 echo "  5. Agent Catalog:  AgentRegistry catalogs agents + MCP servers with RBAC"
 echo "  6. Ambient Mesh:   All traffic is mTLS-encrypted (ztunnel)"
+echo "  7. Cost Controls:  virtual key → attribution → priced spend → budget → 429"
 echo ""
 echo -e "${BOLD}All Pods:${NC}"
 for ns in "${AGW_NS}" "${ISTIO_NS}" "${KAGENT_NS}" "${AR_NS}"; do
@@ -757,6 +868,16 @@ echo '  curl -s localhost:8081/anthropic/v1/messages \'
 echo '    -H "content-type: application/json" \'
 echo '    -H "anthropic-version: 2023-06-01" \'
 echo "    -d '{\"model\":\"claude-sonnet-4-6\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"Say hello!\"}]}' | jq"
+echo ""
+echo '  # Metered LLM route — virtual key required, spend attributed to alice'
+echo '  curl -s localhost:8081/metered-llm/v1/chat/completions \'
+echo '    -H "content-type: application/json" \'
+echo '    -H "Authorization: Bearer sk-alice-demo" \'
+echo "    -d '{\"model\":\"gpt-4o\",\"max_tokens\":20,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}' | jq"
+echo ""
+echo '  # Is pricing landing? (Missing/Unpriced/NoCatalog ⇒ spend undercounts)'
+echo '  kubectl port-forward deploy/agentgateway-proxy -n agentgateway-system 15020:15020 &'
+echo '  curl -s localhost:15020/metrics | grep agentgateway_cost_catalog_lookups_total'
 echo ""
 echo '  # Weather MCP via Inspector'
 echo '  npx @modelcontextprotocol/inspector@0.21.2'

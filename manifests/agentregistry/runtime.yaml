@@ -2,6 +2,26 @@
 # This points at the kagent controller in-cluster. When you deploy a catalog
 # agent to this runtime, AgentRegistry translates its ar.dev resources into
 # kagent's native kagent.dev CRDs.
+#
+# BREAKING CHANGE in AgentRegistry 2026.7.x — `config.auth.oidc` is now REQUIRED
+# for Kagent runtimes. Without it, arctl refuses the object:
+#   ✗ Runtime/kagent failed: prepare: invalid input: auth.oidc is required for kagent runtimes
+# and the Runtime is the only thing that fails — MCPServers, Agents and
+# AccessPolicies all still register, so the symptom is a catalog that looks fine
+# until you try to DEPLOY an agent (Act 5 / kagent-demo Act 3) and there's no
+# runtime to deploy it to. This was silent on 2026.5.4, which didn't require auth.
+#
+# What it's for: AR authenticates OUTBOUND to the kagent controller API. It needs
+# a client-credentials token from Keycloak that kagent will accept — hence a
+# confidential client with service accounts enabled. We reuse `ar-backend` from
+# the realm import (manifests/infrastructure/keycloak-realm.yaml), which already
+# has serviceAccountsEnabled: true.
+#
+# clientSecretRef resolves in AgentRegistry's OWN namespace (agentregistry-system)
+# — verified empirically; the field takes no namespace. setup.sh creates the
+# Secret imperatively from ${AR_BACKEND_SECRET} before registering the catalog:
+#   kubectl create secret generic kagent-oidc -n agentregistry-system \
+#     --from-literal=clientSecret="${AR_BACKEND_SECRET}"
 apiVersion: ar.dev/v1alpha1
 kind: Runtime
 metadata:
@@ -12,3 +32,10 @@ spec:
   config:
     kagentUrl: http://kagent-controller.kagent:8083
     namespace: kagent
+    auth:
+      oidc:
+        issuer: http://keycloak.keycloak.svc.cluster.local:8080/realms/agentgateway
+        clientId: ar-backend
+        clientSecretRef:
+          name: kagent-oidc
+          key: clientSecret

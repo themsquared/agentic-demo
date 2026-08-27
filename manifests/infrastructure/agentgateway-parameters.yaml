@@ -1,8 +1,18 @@
-# EnterpriseAgentgatewayParameters — extra env injected into the AgentGateway
-# proxy pods. Points the proxy at the STS (Secure Token Service) endpoint so it
-# can mint/exchange tokens for the OBO + elicitation flows.
+# EnterpriseAgentgatewayParameters — per-Gateway proxy configuration. Two things
+# here:
+#
+#   1. env — points the proxy at the STS (Secure Token Service) endpoint so it can
+#      mint/exchange tokens for the OBO + elicitation flows.
+#   2. modelCatalog — where the proxy reads per-token PRICES from, so every LLM
+#      request gets a realized USD cost (`llm.cost`) attached. Without this the
+#      gateway counts tokens but every spend figure is $0. See
+#      manifests/cost-management/01-model-costs.yaml for the catalog itself.
 #
 # Referenced by the Gateway's infrastructure.parametersRef (see agentgateway-gateway.yaml).
+#
+# Ordering note: apply the agw-model-costs ConfigMap BEFORE this resource. A
+# missing source isn't fatal (lookups report NoCatalog and spend stays zero), but
+# then the catalog only takes effect on the next proxy reconcile.
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayParameters
 metadata:
@@ -14,3 +24,8 @@ spec:
     value: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/elicitations/oauth2/token
   - name: STS_AUTH_TOKEN
     value: /var/run/secrets/xds-tokens/xds-token
+  modelCatalog:
+    sources:
+    - configMap:
+        name: agw-model-costs
+        key: catalog.json

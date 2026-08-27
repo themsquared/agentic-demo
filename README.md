@@ -3,16 +3,22 @@
 A complete, scripted demo of Solo's agentic stack on a local k3d cluster:
 
 - **Ambient Mesh** (Istio, via Gloo Operator) — automatic mTLS
-- **AgentGateway Enterprise** — LLM + MCP gateway with auth, composable MCP, elicitation
+- **AgentGateway Enterprise** — LLM + MCP gateway with auth, composable MCP,
+  elicitation, and **cost controls** (virtual keys, priced spend, budgets)
 - **kagent Enterprise** — Kubernetes-native AI agent runtime
 - **AgentRegistry Enterprise** — agent/MCP catalog with RBAC and tracing
 - **Keycloak** — OIDC for the UIs and RBAC
+
+Validated versions: AgentGateway Enterprise **v2026.8.2**, kagent Enterprise +
+Solo Enterprise UI **0.5.5**, AgentRegistry Enterprise **2026.8.0**. Override any
+of them in `.env` (`AGW_VERSION`, `KAGENT_ENT_VERSION`, `AR_VERSION`).
 
 Two LLM providers (Anthropic + OpenAI), five MCP servers (local, remote, two
 composable, plus a federated "Virtual MCP" endpoint), and five agents —
 including a multi-model A2A orchestrator — all wired so every LLM and tool call
 flows through AgentGateway, with **distributed tracing** on every call
-(gateway spans + kagent agent spans → ClickHouse → the UI Tracing tab).
+(gateway spans + kagent agent spans → ClickHouse → the UI Tracing tab) and
+**priced, attributed spend** on every LLM call (→ the UI Cost Management tab).
 
 ## Files
 
@@ -57,11 +63,11 @@ Then open the **Solo Enterprise UI** at <http://localhost:9090> (demo/demo).
 
 ```bash
 ./demo.sh             # full walkthrough, press Enter to advance
-./demo.sh --act 4     # reset, then play acts 1..N (1-7)
+./demo.sh --act 4     # reset, then play acts 1..N (1-8)
 ./demo.sh --reset     # clear demo resources, keep infrastructure
 ```
 
-The seven acts:
+The eight acts:
 
 1. **AgentGateway** — add Anthropic + OpenAI, call them through the gateway
 2. **MCP Servers** — local, composable (zero-code), and remote MCP
@@ -81,6 +87,13 @@ The seven acts:
    **OpenAPI → MCP** (auto-generate MCP tools from a REST spec, zero code), and
    **Code Mode** (one script tool that replaces N tool round-trips).
    See `manifests/agw-advanced/` for the manifests.
+8. **Cost Management** — the FinOps story, end to end: a **model cost catalog**
+   (per-token USD rates on the Gateway, so token counts become dollars),
+   **virtual keys** that attribute every request to a user and a team,
+   **budgets** (`EnterpriseAgentgatewayBudget`) in token and USD units with
+   `Block` (HTTP 429) or `Audit` actions, and the **Cost Management UI** — spend
+   by provider/model/group/user/key with CSV export, the price catalog, budget
+   usage, dimensions, and virtual-key admin. See `manifests/cost-management/`.
 
 `demo.sh` shows and applies the **same files** in `manifests/`, so the on-screen
 YAML is exactly what runs. Browse `manifests/` to read the examples directly.
@@ -138,8 +151,9 @@ almost guaranteed to change."* Pinned to a known-good commit in
 | <http://localhost:12121> | AgentRegistry API (for `arctl`) — operator only | — |
 
 The audience only ever sees **`localhost:9090`**. Login, agent chat, the GitHub
-OAuth consent (it redirects back to `:9090/age/elicitations`), and tracing all
-live there — no second tab, no curl. The other three ports are operator/debug.
+OAuth consent (it redirects back to `:9090/age/elicitations`), tracing, and
+**Cost Management** (`:9090/age/` → Cost Management) all live there — no second
+tab, no curl. The other three ports are operator/debug.
 
 > **One-time host entry (required for browser SSO).** The Solo UI logs in via the
 > in-cluster OIDC issuer `keycloak.keycloak.svc.cluster.local:8080`. Map it to the
@@ -159,6 +173,12 @@ User → Enterprise UI → AgentRegistry (catalog + RBAC)
     → AgentGateway (MCP routing + elicitation) → MCP servers (local/remote/composable)
     → A2A protocol (agent-to-agent delegation)
   All pod-to-pod traffic encrypted by Ambient Mesh (ztunnel)
+
+Cost path (same gateway, same request):
+  virtual key → attribution (virtualKey / user / group)
+    → model cost catalog → realized USD on the span
+      → budget check → allow, audit, or 429
+        → spans → ClickHouse → Cost Management dashboard
 ```
 
 ## Good to know
@@ -166,7 +186,24 @@ User → Enterprise UI → AgentRegistry (catalog + RBAC)
 - **Tracing** — every LLM/MCP call through the gateway and every agent run emits
   OTel spans (token counts, models, tools) → ClickHouse → the UI **Tracing** tab.
   Wired by `manifests/observability/agentgateway-tracing.yaml` + kagent's
-  `otel.tracing` helm values (both applied by `setup.sh`).
+  `otel.tracing` helm values (both applied by `setup.sh`). The **Cost Management**
+  dashboard rides the same pipeline — no tracing, no spend charts.
+- **Cost Management is opt-in.** `setup.sh` sets
+  `products.agentgateway.features.cost-management=true` (plus
+  `cost-management-writes=true`) on the management chart. It ships **off** because
+  the ClickHouse reads behind the spend charts aren't optimized yet — fine at demo
+  scale, a deliberate decision in production. Set writes to `false` for a
+  read-only FinOps view.
+- **Cost numbers are only as good as the catalog.** Models the catalog can't price
+  add `$0` rather than erroring, so a partial catalog quietly undercounts. Check
+  `agentgateway_cost_catalog_lookups_total` on the proxy's `:15020/metrics`
+  (`status="Exact"` = priced). Rates in `manifests/cost-management/01-model-costs.yaml`
+  are illustrative demo values — generate real ones with
+  `agctl costs import --providers openai,anthropic`.
+- **Budgets are approximate and fail open.** Token counts aren't known until the
+  response, so usage is debited after the fact (a burst can overshoot slightly),
+  and if the rate limit service is unreachable requests are allowed through.
+  Say both out loud before a customer finds them.
 - **AgentRegistry → Gateways page is empty by design.** AR's managed-gateway
   feature (`ar.dev Gateway`) only supports cloud runtimes (AWS BedrockAgentCore /
   Gemini) in v2026.5.4 — it provisions an EC2 AgentGateway. The kagent runtime

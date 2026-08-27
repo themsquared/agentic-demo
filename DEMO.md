@@ -4,6 +4,17 @@ The presenter's guide. Assumes nothing beyond a Mac with the prerequisites in
 [README.md](README.md). Every command and click-path in here has been run and
 verified against a clean install.
 
+> **Verification status for §7b (Cost Management UI).** The plumbing behind it is
+> confirmed live on a rebuilt cluster: virtual-key auth (401 unattributed / 200
+> attributed), catalog pricing (`status="Exact"`), and budget enforcement (six 200s
+> then 429, with the second key unaffected on its own bucket). The **five UI page
+> layouts** in §7b are described from the 2026.7.1 docs, and the strings
+> (`Cost Management`, `Model Cost Catalog`, `Virtual API Keys`) were confirmed
+> present in the shipped **0.5.4** frontend bundle — but nobody has clicked
+> through those pages yet. The stack has since been bumped to **0.5.5 / AGW
+> v2026.8.2** WITHOUT a runtime pass (Docker was down at bump time), so treat the
+> whole of Act 8 as verified-on-the-previous-pin. Walk it once before presenting.
+
 ---
 
 ## 0. The demo a prospect actually sees (one browser tab)
@@ -21,6 +32,9 @@ tab.** Lead with this — it's the "this is easy" story:
 4. **orchestrator-agent** → *"What's the weather in London, and who is the GitHub
    user octocat?"* → one agent fans out to two specialists.
 5. **Tracing** tab → open the last trace → the full call tree, every LLM + tool hop.
+6. **Cost Management** → **Dashboard** → the spend those chats just produced,
+   broken out by model and by team. *(The "who pays for this" answer, in the same
+   tab, without leaving the product.)*
 
 No curl, no second UI, no token copy-paste — all of it happens at
 `localhost:9090`. The OAuth consent redirect comes **back to the same tab**
@@ -54,6 +68,12 @@ engineer — not what you click through live.
 ./port-forward.sh     # idempotent; re-run any time forwards die
 ```
 
+Versions installed: AgentGateway Enterprise **v2026.8.2**, kagent Enterprise +
+Solo Enterprise UI **0.5.5**, AgentRegistry Enterprise **2026.8.0**. Cost
+Management is enabled by `setup.sh` via
+`products.agentgateway.features.cost-management=true` on the management chart (it
+ships off by default).
+
 | URL | What | Login |
 |-----|------|-------|
 | **http://localhost:9090** | **Solo Enterprise UI — the entire demo + OAuth consent lands here** | **demo / demo** |
@@ -80,15 +100,41 @@ kubectl exec deploy/arctl-helper -n agentregistry-system -- sh -c \
 # Traces flowing into storage (expect a growing number)
 kubectl exec kagent-mgmt-clickhouse-shard0-0 -n kagent -- clickhouse-client -q \
   "SELECT ServiceName, count() FROM platformdb.otel_traces_json GROUP BY ServiceName"
+
+# Metered route + virtual key (expect 200; a bare request expects 401)
+curl -s -o /dev/null -w '%{http_code}\n' localhost:8081/metered-llm/v1/chat/completions \
+  -H "content-type: application/json" -H "Authorization: Bearer sk-alice-demo" \
+  -d '{"model":"gpt-4o","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
+
+# Pricing is landing (expect status="Exact"; Missing/Unpriced/NoCatalog ⇒ $0 spend)
+kubectl port-forward deploy/agentgateway-proxy -n agentgateway-system 15020:15020 >/dev/null 2>&1 &
+sleep 2; curl -s localhost:15020/metrics | grep agentgateway_cost_catalog_lookups_total; kill %1
 ```
 
-All three pass → you're demo-ready. Any fail → see §8.
+All five pass → you're demo-ready. Any fail → see §8.
+
+> **Act 8 burns the token budget — rehearse it and it may stay burned.** Alice's
+> 100-token/day budget is a *rolling* window starting at her first debit, not at
+> midnight, so a rehearsal can leave her at 429 when you present. The always-safe
+> reset is to raise `amount` (or rename the entry, which compiles to a different
+> counter) in `manifests/cost-management/03-budgets.yaml` and re-apply. The
+> fastest reset — **verified working on a live cluster** — is restarting the
+> Redis-backed counter store, which zeroes every budget bucket:
+> ```bash
+> kubectl rollout restart deploy/ext-cache-enterprise-agentgateway -n agentgateway-system
+> ```
+> Either way, confirm with one alice request before the audience arrives — the
+> smoke test above is the check.
+>
+> **Measured pacing** (100 tokens/day, `gpt-4o`, `max_tokens: 20`): each "hi" costs
+> ~17 tokens, so alice gets **six 200s and flips to 429 on the seventh**. Act 8's
+> loop runs to 10 with an early break so the flip always lands on stage.
 
 ## 4. The guided demo (`./demo.sh`)
 
 ```bash
 ./demo.sh             # full walkthrough — press Enter to advance, Ctrl-C to bail
-./demo.sh --act 4     # reset, then play acts 1..N (1–7)
+./demo.sh --act 4     # reset, then play acts 1..N (1–8)
 ./demo.sh --reset     # wipe demo resources, keep infrastructure (tracing survives)
 ```
 
@@ -104,6 +150,8 @@ manifest before applying it. Have a browser open alongside.
 | 5 — AgentRegistry | Runtime, catalog entries, 3-tier RBAC | The governance layer — catalog, discovery, RBAC mapped to Keycloak groups. Applied via in-cluster `arctl` (not kubectl). |
 | 6 — Promotion | "Everything" MCP server federated onto the gateway, catalog repointed | Lifecycle story: raw/ungoverned → governed + federated behind one `/mcp/federated` endpoint. *(Composed workflow, not a one-click product feature — say so.)* |
 | 7 — Advanced AgentGateway | Eager Auth (apiKey + Keycloak JWT), Prompt Policies (mask/enrich/defaults), OpenAPI → MCP, Code Mode | The gateway as a *governance plane*. Unauth'd requests die at the gateway. PII is masked before the model sees it. Any REST API becomes an MCP server via config. Code Mode collapses N agent round-trips into one script. Show the apiKey 401/200, the `<masked>` reply, and Standard-vs-Code in MCP Inspector. |
+
+| 8 — Cost Management | Model cost catalog, virtual keys (alice/bob), `EnterpriseAgentgatewayBudget`, the Cost Management UI | **The act that gets the platform funded.** Token counts become dollars because the gateway holds the price catalog; every request is attributed to a user *and* a team by its virtual key; a runaway agent gets a **429 at the gateway** — no provider call, no spend — while a teammate on his own bucket is untouched. Then show the FinOps dashboard: spend by model/team/user, CSV export, budget usage. Land the two caveats yourself (enforcement debits after the response, so it's approximate; budgets fail open) — a FinOps buyer will respect that more than a claim of hard cutoff. |
 
 MCP Inspector (for Acts 2/3/6): `npx @modelcontextprotocol/inspector@0.21.2`,
 Transport **Streamable HTTP**, URLs `http://localhost:8081/mcp/weather`,
@@ -166,6 +214,34 @@ gateway spans (per LLM call with `gen_ai.*` model/token attributes; per MCP
 method like `tools/list`) and agent execution spans. Open a trace from the
 orchestrator prompt to show the full delegation tree.
 
+### 7b. Cost Management (same pipeline, FinOps view)
+
+UI → **Cost Management**. It rides the exact tracing pipeline above — gateway
+spans → collector → ClickHouse — which is why no tracing means no spend charts.
+Five pages, and the order to walk them:
+
+1. **Model Cost Catalog** — start here. "This is what the gateway thinks a token
+   costs." Rates from `manifests/cost-management/01-model-costs.yaml`.
+2. **Virtual API Keys** — alice (`platform-eng`) and bob (`data-science`), with
+   their attribution metadata. This is *how* spend gets a name attached.
+3. **Dashboard** — total spend and spend-over-time. Filter by **group** to split
+   platform-eng from data-science, then by model. CSV export is the line that
+   lands with a FinOps buyer who lives in spreadsheets.
+4. **Budgets** — the three entries from `03-budgets.yaml` with usage against each:
+   alice's exhausted token bucket, the two Audit-mode USD caps.
+5. **Dimensions** — the attribution hierarchy (group → user) plus custom
+   attributes. Mention that a custom dimension (cost centre, tenant) is a CEL
+   expression in the chart's `budgetDimensions.config`.
+
+Two things worth saying while the dashboard is up:
+
+- **"Unattributed" is the number to drive to zero.** Traffic without a virtual key
+  still shows up — it just can't be charged back to anyone. On `/metered-llm`
+  it can't happen at all (`mode: Strict` → 401).
+- **Spend lags the traffic by a few seconds** — it arrives via traces, not
+  synchronously. Give it a beat before refreshing, and don't narrate an empty
+  chart as a failure.
+
 ## 8. If something's off (symptom → fix)
 
 | Symptom | Cause / fix |
@@ -176,10 +252,19 @@ orchestrator prompt to show the full delegation tree.
 | Agent chat: `missing field type` | A via-gateway ModelConfig was switched to `provider: Anthropic` — must stay `OpenAI` (gateway speaks the unified API; see `manifests/README.md` gotchas) |
 | Agents page crashes ("error with the agents list") | An agent MCP tool lost its non-empty `toolNames`, or a RemoteMCPServer can't discover tools — `kubectl apply -f manifests/kagent/agents/` restores known-good |
 | Tracing tab empty | The `tracing` policy was deleted (old demo.sh did this) — `kubectl apply -f manifests/observability/agentgateway-tracing.yaml` |
+| No **Cost Management** section in the UI menu | The feature flag is off. Re-run `setup.sh`, or `helm upgrade` the `kagent-mgmt` release with `--set 'products.agentgateway.features.cost-management=true'` |
+| Cost dashboard shows requests/tokens but **$0 spend** | The catalog isn't pricing the model. Check `status=` on `agentgateway_cost_catalog_lookups_total` (§3): `Missing`/`Unpriced` = add the model to `01-model-costs.yaml`; `NoCatalog` = the `modelCatalog` ref or the ConfigMap is absent — re-apply `01-model-costs.yaml` then `manifests/infrastructure/agentgateway-parameters.yaml` |
+| Cost dashboard totally empty | Same root cause as an empty Tracing tab — spend arrives over the trace pipeline. Fix tracing first, then re-send metered traffic |
+| All spend lands under **"Unattributed"** | Requests carried no virtual key, or the key's `metadata` lacks `id`/`user`/`group` — see `manifests/cost-management/02-virtual-keys.yaml` |
+| Alice stuck at **429** before you start | Rolling budget window from a rehearsal — see the note in §3 |
+| `no matches for kind "EnterpriseAgentgatewayBudget"` | Cluster is on a pre-v2026.7.x AgentGateway. The Budget CRD ships with `enterprise-agentgateway-crds` v2026.7.0+ — re-run `setup.sh` (pinned to v2026.8.2). **Check `.env` first**: a stale `AGW_VERSION=` there silently overrides setup.sh |
 | Elicitation approval page unreachable | The 9090 UI forward died — re-run `./port-forward.sh` |
 | Elicitation approved but Inspector still fails | If the error is `invalid request`: your Inspector reconnect dropped the `Authorization` header — re-add it. If it's still `token not available` / `elicitation pending`: the elicitation record is stuck — delete it and redo one clean trigger+approve: `TOKEN=$(<§5 step 1>); kubectl exec deploy/arctl-helper -n agentregistry-system -- curl -s -X DELETE -H "Authorization: Bearer $TOKEN" http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/elicitations/<ID>` (list IDs at the same URL without `/<ID>`) |
 | Agent returns `Error code: 529 ... Overloaded` | Transient Anthropic capacity blip. The gateway now retries 429/5xx/529 (3 attempts) — sustained 529s mean Anthropic is genuinely saturated; wait a minute or demo an OpenAI-backed agent instead |
 | Agent says a tool was "not found" | The LLM called a tool by a shortened name — gateway-exposed tool names are prefixed (`get-weather_get-weather`). Prompts now pin exact names; just re-ask |
+| Any Claude call returns 400 `"Your credit balance is too low to access the Anthropic API"` | **Not a demo bug — the Anthropic account is out of credit.** This kills Acts 1, 2, 4 and 7 (everything using `claude-sonnet-4-6`) and every Claude-backed agent chat. Top up the account, or demo the OpenAI-backed paths (`/openai`, `/metered-llm`, orchestrator-agent's GPT-4o front end). Check with the §3 smoke test *before* the audience arrives — the failure looks identical to a broken gateway on stage |
+| Act 8 shows six 200s and never a 429 | The metered route is pointed at a provider that is refusing requests (expired key/no credit/rate limit). Budgets debit from **response** tokens, so a refused request debits nothing and the budget never trips. Point `metered-llm`'s backendRef at a provider that's actually answering — see the note in `manifests/cost-management/02-virtual-keys.yaml` |
+| Solo UI nav looks old / no Cost Management tab / Settings shows a stale `INSTALLED_VERSION` | A cached SPA in the browser, not a stale install — `setup.sh` recreates the cluster and restarts the port-forwards, leaving open tabs holding the old bundle. Hard-reload (Cmd+Shift+R) or open a new window. Verify what the server is actually serving with `curl -s localhost:9090/env-config.js` — that's the exact file the Settings panel renders |
 | Anything weird after experiments | `./demo.sh --reset` rebuilds demo resources; nuclear: `./teardown.sh && ./setup.sh` |
 
 ## 9. Reset & teardown

@@ -1,0 +1,90 @@
+# Act 8 / Scene 3 — Budgets: stop the spend, not just chart it.
+# https://docs.solo.io/agentgateway/latest/llm/cost-controls/budget-limits/
+#
+# One EnterpriseAgentgatewayBudget holds up to 64 independent entries. Each entry
+# is (subject → limit → window → action):
+#
+#   subject           which dimensions this entry applies to. Omit for "everything
+#                     on the route"; "*" means "each distinct value gets its own
+#                     bucket" (per-key, not shared). Dimensions available here:
+#                     model, provider (built-in), virtualKey, user, group
+#                     (resolved from the virtual key / JWT), plus any custom CEL
+#                     dimension you added to budgetDimensions.
+#   limit.unit        Tokens or USD. USD requires a model cost catalog — requests
+#                     the catalog can't price add $0, so a partial catalog silently
+#                     undercounts. limit.amount is a positive WHOLE number, so the
+#                     smallest USD budget you can write is $1.
+#   window.unit       Day / Week / Month / Year. Rolling, not calendar-aligned —
+#                     the window starts at the first debit, not at midnight.
+#   onBudgetExceeded  Block → HTTP 429. Audit → allow but record the breach.
+#                     Roll out in Audit first, then flip to Block.
+#
+# The controller compiles these into config for the built-in global rate limit
+# service (deployed by default with its Redis-backed cache — the
+# rate-limiter-* and ext-cache-* deployments in agentgateway-system).
+#
+# Two honest caveats worth saying out loud in front of a customer:
+#   • Enforcement is APPROXIMATE. Token counts aren't known until the response
+#     comes back, so usage is debited after the fact — a burst can overshoot the
+#     limit slightly before the next request is refused.
+#   • It FAILS OPEN. If the rate limit service is unreachable, requests are
+#     allowed. Availability is chosen over hard spend cutoff.
+#
+# Enforcement only happens where a policy switches it on — see
+# 02-virtual-keys.yaml (`entBudgetEnforcement`), which scopes it to the
+# /metered-llm route.
+#
+# Measured on a live cluster with these exact values: a "hi" request with
+# max_tokens 20 costs ~17 tokens (8 in + 9 out), so alice gets six 200s and flips
+# to 429 on the SEVENTH request. If you change the amount below, re-count — the
+# demo loop in demo.sh Act 8 must run past the flip or the money-shot never lands.
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayBudget
+metadata:
+  name: cost-demo-budgets
+  namespace: agentgateway-system
+spec:
+  budgets:
+  # 1. Per-key token ceiling. subject.virtualKey "*" gives EACH key its own
+  #    100-token bucket — alice running dry doesn't touch bob. Deliberately tiny
+  #    so it trips live in a handful of requests; in production this is where a
+  #    runaway agent loop gets stopped.
+  - name: per-key-daily-tokens
+    subject:
+      virtualKey: "*"
+    limit:
+      unit: Tokens
+      amount: 100
+    window:
+      unit: Day
+    onBudgetExceeded: Block
+
+  # 2. Per-team dollar budget, audit-only. Same machinery, priced in USD off the
+  #    model cost catalog, keyed on the `group` dimension from the virtual key.
+  #    Audit = the breach is recorded and visible in the dashboard, but nobody's
+  #    request gets refused. This is how you land budgets without an outage.
+  - name: platform-eng-monthly-usd
+    subject:
+      group: platform-eng
+    limit:
+      unit: USD
+      amount: 50
+    window:
+      unit: Month
+    onBudgetExceeded: Audit
+
+  # 3. Blast-radius cap on a specific model. Dimensions compose: every entry whose
+  #    subject matches a request is debited, so this one and #1 both apply to
+  #    alice calling gpt-4o. Keep this model in step with the metered route's
+  #    backend (02-virtual-keys.yaml) — a subject that matches no traffic is a
+  #    budget that silently never moves, which is indistinguishable on stage from
+  #    a budget that isn't working.
+  - name: gpt4o-monthly-usd
+    subject:
+      model: gpt-4o
+    limit:
+      unit: USD
+      amount: 200
+    window:
+      unit: Month
+    onBudgetExceeded: Audit

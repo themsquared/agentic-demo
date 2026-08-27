@@ -1,0 +1,67 @@
+# Act 8 / Scene 1 — Model cost catalog: teach the gateway what tokens COST.
+# https://docs.solo.io/agentgateway/latest/llm/cost-controls/costs/
+#
+# Without a catalog the gateway still counts tokens (it always has) — but it has
+# no idea what a token is worth, so every spend number is zero. The catalog is
+# the piece that turns "1,412 output tokens" into "$0.021", which is what makes
+# USD budgets and the Cost Management dashboard work.
+#
+# Shape: a JSON catalog keyed by provider ID → model name → rates. Rates are
+# STRINGS (exact decimals, no float rounding), in USD per 1,000,000 tokens.
+#   input     — prompt tokens
+#   output    — completion tokens
+#   cacheRead — tokens served from the provider's prompt cache
+#
+# The provider ID must match the gateway's provider for the backend
+# ("anthropic" / "openai" here — see manifests/llm-providers/).
+#
+# Loading it is two steps:
+#   1. this ConfigMap
+#   2. spec.modelCatalog.sources on the EnterpriseAgentgatewayParameters that the
+#      Gateway already references — see manifests/infrastructure/agentgateway-parameters.yaml
+#      (that file is where agw-params is defined; it now carries modelCatalog).
+#
+# Once loaded, the gateway populates the CEL fields `llm.cost` (realized USD) and
+# `llm.costRates` (effective per-token rates) on every LLM request. Those flow
+# into access logs, OTel traces (→ ClickHouse → the UI), and metrics.
+#
+# RATES BELOW ARE ILLUSTRATIVE DEMO VALUES. For a real catalog, generate it from
+# the shipped price data instead of hand-maintaining it:
+#   agctl costs import --pretty --providers openai,anthropic --out ./catalog.json
+#   kubectl create configmap agw-model-costs --from-file=catalog.json=./catalog.json \
+#     -n agentgateway-system --dry-run=client -o yaml | kubectl apply -f -
+#
+# Verify pricing is landing (Missing/Unpriced/NoCatalog = spend will undercount):
+#   kubectl port-forward deploy/agentgateway-proxy -n agentgateway-system 15020:15020 &
+#   curl -s localhost:15020/metrics | grep agentgateway_cost_catalog_lookups_total
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agw-model-costs
+  namespace: agentgateway-system
+data:
+  catalog.json: |
+    {
+      "providers": {
+        "anthropic": {
+          "models": {
+            "claude-sonnet-4-6": {
+              "rates": { "input": "3.00", "output": "15.00", "cacheRead": "0.30" }
+            },
+            "claude-haiku-4-5": {
+              "rates": { "input": "1.00", "output": "5.00", "cacheRead": "0.10" }
+            }
+          }
+        },
+        "openai": {
+          "models": {
+            "gpt-4o": {
+              "rates": { "input": "2.50", "output": "10.00", "cacheRead": "1.25" }
+            },
+            "gpt-4o-mini": {
+              "rates": { "input": "0.15", "output": "0.60", "cacheRead": "0.075" }
+            }
+          }
+        }
+      }
+    }

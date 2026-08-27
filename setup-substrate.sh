@@ -4,7 +4,7 @@
 #
 # Builds a SEPARATE kind cluster running Agent Substrate
 # (github.com/agent-substrate/substrate). This does NOT touch the main k3d
-# "ai-demo" cluster — Acts 1–7 of the main demo keep running unchanged.
+# "ai-demo" cluster — Acts 1–8 of the main demo keep running unchanged.
 #
 # Why a separate cluster: Substrate needs K8s feature gates that are alpha
 # in v1.34 / beta in v1.35 (PodCertificateRequest, ClusterTrustBundle), AND
@@ -224,4 +224,4 @@ echo "  open http://localhost:8001"
 echo ""
 echo -e "${BOLD}Main demo unchanged:${NC}"
 echo "  kubectl config use-context k3d-ai-demo"
-echo "  ./demo.sh                  # Acts 1-7"
+echo "  ./demo.sh                  # Acts 1-8"

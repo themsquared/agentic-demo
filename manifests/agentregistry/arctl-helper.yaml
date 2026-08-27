@@ -79,7 +79,11 @@ spec:
         - name: REG
           value: http://agentregistry-enterprise-server.agentregistry-system.svc.cluster.local:12121
         - name: ARCTL_VERSION
-          value: v2026.5.4
+          # Keep in step with AR_VERSION in setup.sh. The `v` prefix is REQUIRED:
+          # the GCS layout is <bucket>/v2026.8.0/arctl-linux-amd64 — the bare
+          # `2026.8.0` path 404s, and install.sh then silently falls through its
+          # version loop and installs nothing.
+          value: v2026.8.0
         volumeMounts:
         - name: scripts
           mountPath: /scripts
