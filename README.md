@@ -1,5 +1,7 @@
 # Solo Agentic Demo
 
+> 📖 **Read the write-up:** [Capping LLM Spend at the AI Gateway: Budgets and Virtual Keys](https://webofmike.com/llm-cost-controls-ai-gateway/)
+
 A complete, scripted demo of Solo's agentic stack on a local k3d cluster:
 
 - **Ambient Mesh** (Istio, via Gloo Operator) — automatic mTLS
