@@ -1,0 +1,60 @@
+# Act 2 / Scene 2 — Policy-as-code access control with CEL.
+#
+# One EnterpriseAgentgatewayPolicy, one CEL expression, evaluated INSIDE the
+# proxy on every request to /governed-llm (no external call, no sidecar). The
+# expression has two halves joined by &&:
+#
+#   Half 1 — Sanctions scoping (the OFAC question).
+#     The corporate IdP asserts a `country` claim on the user's JWT. If the
+#     claim is missing, or names a comprehensively-sanctioned jurisdiction,
+#     the request is refused at the gateway. The model provider is never
+#     contacted, so there is nothing to export, log, or bill.
+#
+#   Half 2 — Model allowlist (enforce the AI use policy you already wrote).
+#     The request body's `model` must be on the approved list. Anything else
+#     — a new frontier model someone found on Hacker News, a deprecated one,
+#     a typo — is a 403, not a surprise on next month's invoice.
+#
+# WHY ONE EXPRESSION, NOT TWO (verified live on v2026.8.2): entries in
+# matchExpressions are OR'ed — a request is allowed if ANY expression is true
+# ("requests that do not match any of the conditions are denied"). To require
+# BOTH conditions, join them with && inside a single expression.
+#
+# Denied requests get HTTP 403 "authorization failed", and the access log
+# (06-access-logs.yaml) records who / which model / which country.
+#
+# CEL variables used (docs → Reference → CEL):
+#   jwt.<claim>          any claim on the validated JWT (`country`, `Groups`, ...)
+#   json(request.body)   the parsed request body — `.model` is the requested model
+#   (llm.requestModel is NOT available in this phase — it is populated after
+#    routing, for backend/ai policies. Use the body here.)
+#
+# Verify (after apply) — maria has country=US, pat has country=IR:
+#   MARIA=$(... username=maria ...); PAT=$(... username=pat ...)
+#   curl -s -o /dev/null -w '%{http_code}\n' localhost:8081/governed-llm/v1/chat/completions \
+#     -H "Authorization: Bearer $MARIA" -H 'content-type: application/json' \
+#     -d '{"model":"claude-haiku-4-5","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}'   # 200
+#   ... same with $PAT                                                                                 # 403 (country)
+#   ... $MARIA with "model":"claude-opus-4-1"                                                          # 403 (not allowlisted)
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: governed-llm-access
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: governed-llm
+  traffic:
+    authorization:
+      action: Allow            # Allow = request must match ALL expressions; otherwise 403
+      policy:
+        matchExpressions:
+        # ONE expression = both halves required. Illustrative sanctions list:
+        # Cuba, Iran, North Korea, Syria. The source of truth belongs in your
+        # GRC system; this is where it gets ENFORCED. Add a virtual model name
+        # to the allowlist once you alias it (03-model-aliases.yaml).
+        - >-
+          has(jwt.country) && !(jwt.country in ['CU', 'IR', 'KP', 'SY'])
+          && json(request.body).model in ['claude-sonnet-4-6', 'claude-haiku-4-5', 'acme-standard', 'acme-premium']

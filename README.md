@@ -29,6 +29,8 @@ flows through AgentGateway, with **distributed tracing** on every call
 | `setup.sh` | One-shot full deployment — cluster, mesh, AGW, kagent, AgentRegistry, all resources |
 | `demo.sh` | Interactive, act-by-act walkthrough that builds the stack live (resets first) |
 | `DEMO.md` | **Presenter's runbook** — prep, smoke test, act-by-act talking points, elicitation walkthrough, troubleshooting |
+| `governance-demo.sh` | Security/governance walkthrough — identity & OBO, locale-scoped model access in CEL, WAF for LLM & MCP, agent forensics, audit output (`--check` smoke-tests it) |
+| `GOVERNANCE-DEMO.md` | Runbook for the above — personas, act-by-act results, the gotchas, and what it deliberately does *not* claim |
 | `port-forward.sh` | Exposes all UIs/APIs locally (re-run if forwards die) |
 | `teardown.sh` | Deletes the k3d cluster |
 | `.env.example` | Template for secrets — `cp .env.example .env` and fill in (`.env` is gitignored) |
@@ -114,6 +116,30 @@ tool servers, and **promoting an agent from AgentRegistry onto kagent**:
 See [KAGENT-DEMO.md](KAGENT-DEMO.md) for the runbook. Act 3 promotes a packaged
 (container) agent whose source lives in [`agents-src/weatherwise/`](agents-src/weatherwise/);
 `setup.sh` builds that image and loads it into k3d (Docker required for Act 3).
+
+### Security & governance demo
+
+A walkthrough aimed at security architecture and AI-governance audiences —
+identity, locale-scoped model access, WAF for AI traffic, agent forensics, and
+the audit output:
+
+```bash
+./governance-demo.sh            # 5 acts: identity/OBO → locale + allowlist (CEL) →
+                                #   WAF for LLM & MCP → forensics → observability
+./governance-demo.sh --check    # non-interactive smoke test of every assertion
+./governance-demo.sh --act 3    # reset, fast-forward acts 1..2, play act 3
+./governance-demo.sh --reset    # clear this demo's resources only
+```
+
+See [GOVERNANCE-DEMO.md](GOVERNANCE-DEMO.md) for the runbook. Its manifests live
+in [`manifests/governance/`](manifests/governance/) and are **scoped to their own
+routes** (`/governed-llm`, `/mcp/governed`), so this demo neither disturbs nor is
+disturbed by `demo.sh` / `agentgateway-demo.sh`. It needs two objects those
+create — `anthropic-secret` and the `weather-mcp` backend — both of which
+`setup.sh` provides.
+
+Run `--check` before any live delivery: it exercises all 24 assertions in about
+four minutes and prints a pass/fail line for each.
 
 ### Agent Substrate sidetrack (alpha / experimental)
 

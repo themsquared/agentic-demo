@@ -1,0 +1,30 @@
+# Act 2 / Scene 3 — Virtual model names (the "least-cost routing" ask).
+#
+# Callers ask for `acme-standard` or `acme-premium`. The gateway maps
+# those to whatever real model the platform team has approved TODAY. Swap the
+# provider or the model underneath — nobody's code changes, and the allowlist
+# in 02-ofac-model-allowlist.yaml keeps pointing at the same two names.
+#
+# This is a backend policy: it attaches to the anthropic-governed backend, so it
+# applies to every route that selects that backend (here: /governed-llm only).
+#
+# Verify (after apply):
+#   curl -s localhost:8081/governed-llm/v1/chat/completions -H "Authorization: Bearer $MARIA" \
+#     -H 'content-type: application/json' \
+#     -d '{"model":"acme-standard","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}' | jq -r .model
+#   # → claude-haiku-4-5   (the alias resolved; the response reports the real model)
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: governed-llm-aliases
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: agentgateway.dev
+    kind: AgentgatewayBackend
+    name: anthropic-governed
+  backend:
+    ai:
+      modelAliases:
+        acme-standard: claude-haiku-4-5     # cheap + fast — the default tier
+        acme-premium: claude-sonnet-4-6     # reasoning tier, on request

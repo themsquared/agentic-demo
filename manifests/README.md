@@ -23,6 +23,7 @@ Each file is heavily commented so it stands on its own as a reference example.
 | `llm-providers/` | Anthropic + OpenAI `AgentgatewayBackend` + `HTTPRoute` | Act 1 |
 | `mcp-servers/` | Website fetcher (local), weather + GitHub-profile (composable), GitHub remote, the MCP routes, plus the `everything` server + `virtual-mcp` federation | Acts 2 & 6 |
 | `security/` | GitHub OAuth elicitation policy | Act 3 |
+| `governance/` | The **security & governance demo** (`governance-demo.sh`): governed LLM route + JWT identity (`01`), locale/model-allowlist CEL policy (`02`), virtual model aliases (`03`), WAF for LLM (`04`) and MCP (`05`), identity-enriched access logs (`06`) — see `governance/README.md` | `governance-demo.sh` Acts 1–5 |
 | `observability/` | AgentGateway tracing policy (OTLP → bundled collector → ClickHouse → UI Tracing **and** Cost Management tabs) | setup only |
 | `cost-management/` | Model cost catalog (`01`), virtual keys + metered route (`/metered-llm`) + apiKey/budget policy (`02`), `EnterpriseAgentgatewayBudget` (`03`) | Act 8 (also applied by setup) |
 | `kagent/` | `ModelConfig`s, `RemoteMCPServer`s, and `agents/` | Act 4 |

@@ -1,0 +1,97 @@
+# Act 2 / Scene 1 — The governed LLM endpoint.
+#
+# Everything in manifests/governance/ hangs off ONE route: /governed-llm.
+# It fronts a dedicated Anthropic backend (same provider key as /anthropic,
+# separate object so the policies here never touch the rest of the demo).
+#
+# Three pieces:
+#   1. AgentgatewayBackend anthropic-governed — the LLM upstream. The real
+#      Anthropic key is injected from anthropic-secret at request time; callers
+#      never hold it.
+#   2. HTTPRoute /governed-llm → that backend.
+#   3. EnterpriseAgentgatewayPolicy governed-llm-identity — JWT authentication
+#      against Keycloak (the corporate IdP stand-in). Strict: no valid corporate
+#      identity, no request. This is the identity the later policies key off:
+#      jwt.preferred_username, jwt.Groups, jwt.country.
+#
+# Verify (after apply):
+#   TOKEN=$(curl -s -X POST http://keycloak.keycloak.svc.cluster.local:8080/realms/agentgateway/protocol/openid-connect/token \
+#     -d grant_type=password -d client_id=ar-cli-password -d username=maria -d password=demo -d scope=openid | jq -r .access_token)
+#   curl -i localhost:8081/governed-llm/v1/chat/completions -H 'content-type: application/json' \
+#     -d '{"model":"claude-haiku-4-5","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}'
+#   # → 401 (no identity)
+#   curl -s localhost:8081/governed-llm/v1/chat/completions -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+#     -d '{"model":"claude-haiku-4-5","max_tokens":20,"messages":[{"role":"user","content":"hi"}]}' | jq -r '.choices[0].message.content'
+#   # → 200
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: anthropic-governed
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      anthropic:
+        {}                            # no model pin — the CALLER (or an alias) chooses; the allowlist decides
+  policies:
+    auth:
+      secretRef:
+        name: anthropic-secret        # created in Act 1 of agentgateway-demo.sh
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: governed-llm
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+  - name: agentgateway-proxy
+    namespace: agentgateway-system
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /governed-llm
+    filters:
+    - type: URLRewrite
+      urlRewrite:
+        path:
+          type: ReplacePrefixMatch
+          replacePrefixMatch: /
+    - type: RequestHeaderModifier
+      requestHeaderModifier:
+        remove: [Origin, Referer]
+    backendRefs:
+    - name: anthropic-governed
+      namespace: agentgateway-system
+      group: agentgateway.dev
+      kind: AgentgatewayBackend
+---
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: governed-llm-identity
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: governed-llm
+  traffic:
+    jwtAuthentication:
+      mode: Strict
+      location:
+        header:
+          name: Authorization
+          prefix: "Bearer "
+      providers:
+      # Keycloak = the corporate IdP. Swap issuer + JWKS for Entra ID / Okta /
+      # Ping — the policy shape is identical.
+      - issuer: http://keycloak.keycloak.svc.cluster.local:8080/realms/agentgateway
+        jwks:
+          remote:
+            backendRef:
+              name: keycloak
+              namespace: keycloak
+              port: 8080
+            jwksPath: /realms/agentgateway/protocol/openid-connect/certs

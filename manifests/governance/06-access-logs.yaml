@@ -1,0 +1,65 @@
+# Access logs — the forensic record for every request through the gateway.
+# https://docs.solo.io/agentgateway/kubernetes/latest/documentation/observability/access-logs/
+#
+# Tracing (manifests/observability/agentgateway-tracing.yaml) gives the call
+# tree. Access logs give the per-request AUDIT row: who (jwt.sub / preferred
+# username / country), what (model requested, model served, tokens, USD cost),
+# and the decision (HTTP status — 403 = a policy said no).
+#
+# Two outputs from ONE policy on the Gateway:
+#   1. The proxy's stdout (kubectl logs) — structured key=value, one line per request
+#   2. OTLP → the enterprise telemetry collector → ClickHouse platformdb.otel_logs_json
+#      (same pipeline the traces and the cost dashboard already ride)
+#
+# The `add` attributes are CEL. Anything visible to policy is visible to the
+# log: jwt.*, apiKey.*, llm.*, mcp.*, request.*, response.*, source.*.
+# Attribute values that don't resolve (e.g. no JWT on an unauthenticated route)
+# are simply omitted from that row. Avoid a name that is both a scalar and a
+# prefix (`user` AND `user.country`) — ClickHouse's JSON column can't hold both.
+#
+# Verify:
+#   kubectl -n agentgateway-system logs deploy/agentgateway-proxy --since=1m | grep 'http.path=/governed-llm'
+#   kubectl exec kagent-mgmt-clickhouse-shard0-0 -n kagent -- clickhouse-client -q "
+#     SELECT LogAttributes.identity.user AS user, LogAttributes.identity.country AS country,
+#            LogAttributes.http.status AS status, LogAttributes.gen_ai.request.model AS model, count() AS n
+#     FROM platformdb.otel_logs_json
+#     WHERE LogAttributes.route = 'agentgateway-system/governed-llm'
+#     GROUP BY user, country, status, model ORDER BY n DESC"
+#   # → the SOC view: every denial, by person, by country, by model — in SQL.
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: access-logs
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: agentgateway-proxy
+  frontend:
+    accessLog:
+      # Enrich every row with identity + AI context. Names are free-form.
+      # Enrich every row with the IDENTITY behind the request. Names are
+      # free-form; keep them under one prefix that doesn't collide with the
+      # built-in fields (the proxy already emits gen_ai.*, jwt.sub, http.*,
+      # agw.ai.usage.cost.total for LLM calls — no need to repeat those).
+      attributes:
+        add:
+        - name: identity.user
+          expression: 'jwt.preferred_username'
+        - name: identity.country
+          expression: 'jwt.country'
+        - name: identity.groups
+          expression: 'jwt.Groups'
+        - name: identity.virtual_key
+          expression: 'apiKey.id'
+        - name: mcp.tool
+          expression: 'mcp.name'
+      # Ship the same rows to ClickHouse as OTLP LogRecords.
+      otlp:
+        backendRef:
+          name: solo-enterprise-telemetry-collector
+          namespace: kagent
+          kind: Service
+          port: 4317
+        protocol: GRPC
