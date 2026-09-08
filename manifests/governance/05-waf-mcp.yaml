@@ -25,7 +25,7 @@
 #   P=localhost:8081/mcp/governed; H=(-H 'content-type: application/json' -H 'accept: application/json, text/event-stream')
 #   SID=$(curl -s -D - $P "${H[@]}" -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"c","version":"1"}}}' | awk 'tolower($1)=="mcp-session-id:"{print $2}' | tr -d '\r')
 #   call() { curl -s -o /dev/null -w '%{http_code}\n' $P "${H[@]}" -H "Mcp-Session-Id: $SID" -d "$1"; }
-#   call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get-weather-by-city_get-weather-by-city","arguments":{"city":"Columbus"}}}'            # 200
+#   call '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get-weather-by-city_get-weather-by-city","arguments":{"city":"Portland"}}}'            # 200
 #   call '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get-weather-by-city_get-weather-by-city","arguments":{"city":"../../etc/passwd"}}}'    # 403 (CRS LFI)
 #   call '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get-weather-by-city_get-weather-by-city","arguments":{"city":"<script>alert(1)</script>"}}}'  # 403 (CRS XSS)
 #   call '{"jsonrpc":"2.0","id":5,"method":"resources/list"}'                                                                                                     # 403 (rule 9101)

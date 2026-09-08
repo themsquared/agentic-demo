@@ -642,7 +642,7 @@ mcpc() { curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$P" "${MH[@]}" -H
 TOOL="get-weather-by-city_get-weather-by-city"
 expect "tools/list (allowlisted method)" "200" "$(mcpc '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
 expect "tools/call with a real argument" "200" \
-  "$(mcpc "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"${TOOL}\",\"arguments\":{\"city\":\"Columbus\"}}}")"
+  "$(mcpc "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"${TOOL}\",\"arguments\":{\"city\":\"Portland\"}}}")"
 expect "tool argument: path traversal" "403" \
   "$(mcpc "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"${TOOL}\",\"arguments\":{\"city\":\"../../etc/passwd\"}}}")"
 expect "tool argument: XSS payload" "403" \
@@ -655,7 +655,7 @@ narrate ""
 narrate "What a real tool call returns through the governed path:"
 if [ "$CHECK_MODE" = "false" ] && [ "$SILENT" = "false" ]; then
   curl -s --max-time 30 "$P" "${MH[@]}" -H "Mcp-Session-Id: ${SID}" \
-    -d "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"${TOOL}\",\"arguments\":{\"city\":\"Columbus\"}}}" \
+    -d "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/call\",\"params\":{\"name\":\"${TOOL}\",\"arguments\":{\"city\":\"Portland\"}}}" \
     | sed -n 's/^data: //p' | head -1 | jq -r '.result.content[0].text // .error.message' | sed 's/^/    /'
 fi
 narrate ""
@@ -691,9 +691,9 @@ scene "Step 1 — the agent does real work (this is the evidence)"
 narrate "A Slack-style SRE bot calls a kagent agent over A2A, carrying a real"
 narrate "user identity. The agent calls a model and a tool through the gateway."
 if [ "$CHECK_MODE" = "false" ] && [ "$SILENT" = "false" ]; then
-  run_cmd "./sre-bot.sh --agent ${FORENSIC_AGENT} \"Is it raining in Columbus, Indiana right now? One sentence.\""
+  run_cmd "./sre-bot.sh --agent ${FORENSIC_AGENT} \"Is it raining in Portland, Oregon right now? One sentence.\""
 else
-  "${SCRIPT_DIR}/sre-bot.sh" --agent "${FORENSIC_AGENT}" "Is it raining in Columbus, Indiana right now? One sentence." >/dev/null 2>&1
+  "${SCRIPT_DIR}/sre-bot.sh" --agent "${FORENSIC_AGENT}" "Is it raining in Portland, Oregon right now? One sentence." >/dev/null 2>&1
 fi
 start_ctrl_pf || check_fail "Could not reach the kagent controller on :8083"
 KTOK=$(curl -s --max-time 10 -X POST "${KC_URL}/realms/${KC_REALM}/protocol/openid-connect/token" \
