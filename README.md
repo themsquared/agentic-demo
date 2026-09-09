@@ -138,7 +138,7 @@ disturbed by `demo.sh` / `agentgateway-demo.sh`. It needs two objects those
 create — `anthropic-secret` and the `weather-mcp` backend — both of which
 `setup.sh` provides.
 
-Run `--check` before any live delivery: it exercises all 24 assertions in about
+Run `--check` before any live delivery: it exercises all 42 assertions in about
 four minutes and prints a pass/fail line for each.
 
 ### Agent Substrate sidetrack (alpha / experimental)

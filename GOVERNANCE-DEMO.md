@@ -30,7 +30,7 @@ query. Five acts, about 30 minutes.
 ./governance-demo.sh --check
 ```
 
-`--check` runs all 24 assertions non-interactively in about four minutes and
+`--check` runs all 42 assertions non-interactively in about four minutes and
 prints a pass/fail line for each. **If it says "All assertions passed", the demo
 will work.** Run it before any live delivery.
 
