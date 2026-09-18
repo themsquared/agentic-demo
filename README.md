@@ -1,6 +1,7 @@
 # Solo Agentic Demo
 
 > 📖 **Read the write-up:** [Capping LLM Spend at the AI Gateway: Budgets and Virtual Keys](https://webofmike.com/llm-cost-controls-ai-gateway/)
+> 📖 **Read the write-up:** [Two agentgateway CEL Gotchas: One Fails Open, One Fails Closed](https://webofmike.com/agentgateway-cel-authorization-gotchas/)
 
 A complete, scripted demo of Solo's agentic stack on a local k3d cluster:
 
