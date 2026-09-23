@@ -16,6 +16,8 @@ spec:
       You are a technical research assistant. You can fetch web pages and look up
       GitHub profiles. Summarize findings with bullet points. Cite sources.
     modelConfig: anthropic-via-agw
+    # FALLBACK: openai-via-agw — switch to this if the Anthropic key
+    # runs dry. Every call through a dry key returns a provider 400.
     tools:
     - type: McpServer
       mcpServer:

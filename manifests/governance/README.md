@@ -11,7 +11,7 @@ applied and reset independently of either.
 
 | File | Creates | Control it demonstrates |
 |---|---|---|
-| `01-governed-llm-route.yaml` | `AgentgatewayBackend anthropic-governed`, `HTTPRoute governed-llm`, `EnterpriseAgentgatewayPolicy governed-llm-identity` | **Identity.** Strict JWT validation against the corporate IdP's JWKS, before any backend is contacted |
+| `01-governed-llm-route.yaml` | `AgentgatewayBackend governed-llm-backend`, `HTTPRoute governed-llm`, `EnterpriseAgentgatewayPolicy governed-llm-identity` | **Identity.** Strict JWT validation against the corporate IdP's JWKS, before any backend is contacted |
 | `02-ofac-model-allowlist.yaml` | `EnterpriseAgentgatewayPolicy governed-llm-access` | **Authorization.** CEL over the JWT `country` claim (OFAC scoping) AND a model allowlist, in one expression |
 | `03-model-aliases.yaml` | `EnterpriseAgentgatewayPolicy governed-llm-aliases` | **Abstraction.** Virtual model names (`acme-standard` / `acme-premium`) that decouple callers from vendors |
 | `04-waf-llm.yaml` | `WAFPolicy` + `EnterpriseAgentgatewayPolicy governed-llm-waf` | **Payload inspection, LLM.** OWASP CRS + custom prompt-injection / jailbreak signatures over the request body |

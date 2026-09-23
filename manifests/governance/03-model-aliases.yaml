@@ -5,14 +5,14 @@
 # provider or the model underneath — nobody's code changes, and the allowlist
 # in 02-ofac-model-allowlist.yaml keeps pointing at the same two names.
 #
-# This is a backend policy: it attaches to the anthropic-governed backend, so it
+# This is a backend policy: it attaches to the governed-llm-backend backend, so it
 # applies to every route that selects that backend (here: /governed-llm only).
 #
 # Verify (after apply):
 #   curl -s localhost:8081/governed-llm/v1/chat/completions -H "Authorization: Bearer $MARIA" \
 #     -H 'content-type: application/json' \
 #     -d '{"model":"acme-standard","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}' | jq -r .model
-#   # → claude-haiku-4-5   (the alias resolved; the response reports the real model)
+#   # → claude-haiku-4-5-20251001   (alias resolved; the response names the real model)
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayPolicy
 metadata:
@@ -22,9 +22,13 @@ spec:
   targetRefs:
   - group: agentgateway.dev
     kind: AgentgatewayBackend
-    name: anthropic-governed
+    name: governed-llm-backend
   backend:
     ai:
       modelAliases:
+        # ── ACTIVE: Anthropic ─────────────────────────────────────────────
         acme-standard: claude-haiku-4-5     # cheap + fast — the default tier
         acme-premium: claude-sonnet-4-6     # reasoning tier, on request
+        # ── FALLBACK: OpenAI ──────────────────────────────────────────────
+        # acme-standard: gpt-4o-mini
+        # acme-premium: gpt-4o

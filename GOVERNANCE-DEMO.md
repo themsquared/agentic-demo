@@ -30,7 +30,7 @@ query. Five acts, about 30 minutes.
 ./governance-demo.sh --check
 ```
 
-`--check` runs all 42 assertions non-interactively in about four minutes and
+`--check` runs all 44 assertions non-interactively in about four minutes and
 prints a pass/fail line for each. **If it says "All assertions passed", the demo
 will work.** Run it before any live delivery.
 
@@ -46,6 +46,13 @@ Two prerequisites beyond the standard demo:
    ```bash
    kubectl apply -f manifests/infrastructure/keycloak-realm.yaml
    kubectl rollout restart deploy/keycloak -n keycloak
+   ```
+
+3. **The kagent controller on :8083.** Act 4 reads the session and task
+   records through it, and `sre-bot.sh` posts through the same port.
+   Preflight starts the forward and fails loudly if it cannot:
+   ```bash
+   kubectl port-forward -n kagent svc/kagent-controller 8083:8083
    ```
 
 Have **http://localhost:9090** open (demo/demo) for the Act 1 consent screen and
@@ -89,6 +96,11 @@ Keycloak's JWKS.
 Then the OBO half, using `manifests/security/github-elicitation-policy.yaml`.
 The gateway swaps the caller's corporate JWT for **that user's own** stored
 GitHub token.
+
+The scene then calls GitHub's `get_me` tool and prints the account it comes
+back as. That is the proof the gateway **exchanged** the token rather than
+passing it through: a shared PAT would answer as a service account, and a
+raw Keycloak JWT would be rejected outright by GitHub.
 
 **Say this:** Keycloak stands in for Entra ID. Swap the issuer and the JWKS URL
 and the policy is byte-for-byte the same. The OBO flow is a *gateway*

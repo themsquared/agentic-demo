@@ -21,6 +21,8 @@ spec:
       51-55=drizzle, 61-65=rain, 71-75=snow, 80-82=showers, 95-99=thunderstorm.
       Be concise — one paragraph per response.
     modelConfig: anthropic-via-agw          # ← LLM through the gateway
+    # FALLBACK: openai-via-agw — switch to this if the Anthropic key
+    # runs dry. Every call through a dry key returns a provider 400.
     tools:
     - type: McpServer
       mcpServer:

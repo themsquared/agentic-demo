@@ -267,6 +267,96 @@ llm_json() {
     -H 'content-type: application/json' -H "Authorization: Bearer $1" -d "$2"
 }
 
+# llm_both <token> <body> — ONE call that yields the body and the status code,
+# so a probe can show what came back instead of only asserting a number.
+# Prints the response body, then a final line with the HTTP status.
+llm_both() {
+  local tok=$1 body=$2
+  if [ -n "$tok" ]; then
+    curl -s -w '\n%{http_code}' --max-time 45 "${AGW_PROXY}/governed-llm/v1/chat/completions" \
+      -H "Authorization: Bearer ${tok}" -H 'content-type: application/json' -d "$body"
+  else
+    curl -s -w '\n%{http_code}' --max-time 45 "${AGW_PROXY}/governed-llm/v1/chat/completions" \
+      -H 'content-type: application/json' -d "$body"
+  fi
+}
+
+# gov_probe <label> <expected> <what-was-sent> <token> <body>
+# Shows the request, asserts the status, and prints real output: model + reply
+# on a 200, the gateway's own refusal text otherwise. Never "we did a thing".
+gov_probe() {
+  local label=$1 want=$2 desc=$3 tok=$4 body=$5 out code resp
+  show_send "$desc"
+  out=$(llm_both "$tok" "$body")
+  code=$(printf '%s' "$out" | tail -n1)
+  resp=$(printf '%s' "$out" | sed '$d')
+  expect_why "$label" "$want" "$code" ""
+  { [ "$CHECK_MODE" = "true" ] || [ "$SILENT" = "true" ]; } && return 0
+  if [ "$code" = "200" ]; then
+    printf '%s' "$resp" | jq -r '"      model: \(.model)\n      reply: \(.choices[0].message.content)"' 2>/dev/null \
+      || { printf '%s' "$resp" | head -c 200 | sed 's/^/      /'; echo ""; }
+  else
+    printf '%s' "$resp" | head -c 220 | sed 's/^/      /'; echo ""
+  fi
+}
+
+# expect_match <label> <regex> <actual> — for values that carry a version suffix
+# the provider may bump (claude-haiku-4-5-20251001), so the demo does not fail
+# on a date change.
+expect_match() {
+  local label=$1 re=$2 got=$3
+  if printf '%s' "$got" | grep -Eq "$re"; then
+    printf "  ${GREEN}✓${NC} %-44s ${GREEN}%s${NC}\n" "$label" "$got"
+  else
+    printf "  ${RED}✗${NC} %-44s ${RED}%s${NC}  ${DIM}(expected /%s/)${NC}\n" "$label" "$got" "$re"
+    FAILURES=$((FAILURES+1))
+  fi
+}
+
+# show_mcp <label> <raw response> — render an MCP reply readably. The wire
+# format is SSE ("data: {...}"), which is unreadable on a projector, so pull the
+# JSON out and summarise the init result: protocol, server, capabilities.
+show_mcp() {
+  { [ "$CHECK_MODE" = "true" ] || [ "$SILENT" = "true" ]; } && return 0
+  local j
+  echo -e "  ${DIM}$1${NC}"
+  j=$(printf '%s' "$2" | sed -n 's/^data: //p' | head -1)
+  [ -z "$j" ] && j=$(printf '%s' "$2")
+  if printf '%s' "$j" | jq -e '.result.serverInfo' >/dev/null 2>&1; then
+    printf '%s' "$j" | jq -r '"      protocolVersion: \(.result.protocolVersion)
+      serverInfo:      \(.result.serverInfo.name)
+      capabilities:    \(.result.capabilities | keys | join(", "))"'
+  elif printf '%s' "$j" | jq -e . >/dev/null 2>&1; then
+    printf '%s' "$j" | jq -c '{id, error}' 2>/dev/null | head -c 300 | sed 's/^/      /'; echo ""
+  else
+    printf '%s' "$j" | head -c 300 | sed 's/^/      /'; echo ""
+  fi
+}
+
+# gh_whoami <mcp-session-id> — ask the GitHub MCP server "who am I?".
+# This is the PROOF that the gateway exchanged the caller's corporate JWT for
+# that user's own GitHub token. A shared PAT would answer as the service
+# account; a raw passthrough of the Keycloak JWT would be rejected by GitHub.
+# Prints the identity lines and returns non-zero if GitHub did not answer.
+gh_whoami() {
+  local sid=$1 out j
+  [ -z "$sid" ] && return 1
+  curl -s -o /dev/null --max-time 10 "${AGW_PROXY}/mcp/github-remote" \
+    -H "Authorization: Bearer ${DEMO}" -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' -H "Mcp-Session-Id: ${sid}" \
+    -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' 2>/dev/null
+  out=$(curl -s --max-time 30 "${AGW_PROXY}/mcp/github-remote" \
+    -H "Authorization: Bearer ${DEMO}" -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' -H "Mcp-Session-Id: ${sid}" \
+    -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_me","arguments":{}}}' 2>/dev/null)
+  j=$(printf '%s' "$out" | sed -n 's/^data: //p' | head -1 | jq -r '.result.content[0].text // empty' 2>/dev/null)
+  [ -z "$j" ] && return 1
+  GH_LOGIN=$(printf '%s' "$j" | jq -r '.login // empty' 2>/dev/null)
+  { [ "$CHECK_MODE" = "true" ] || [ "$SILENT" = "true" ]; } && { [ -n "$GH_LOGIN" ]; return $?; }
+  printf '%s' "$j" | jq -r '"      login:   \(.login)\n      name:    \(.details.name // "—")\n      profile: \(.profile_url)"' 2>/dev/null
+  [ -n "$GH_LOGIN" ]
+}
+
 chat_body() { printf '{"model":"%s","max_tokens":%s,"messages":[{"role":"user","content":%s}]}' "$1" "${3:-16}" "$(printf '%s' "$2" | jq -Rs .)"; }
 
 ch() { kubectl exec "${CLICKHOUSE_POD}" -n "${KAGENT_NS}" -- clickhouse-client -q "$1" 2>&1; }
@@ -274,11 +364,20 @@ ch() { kubectl exec "${CLICKHOUSE_POD}" -n "${KAGENT_NS}" -- clickhouse-client -
 # Ensure a port-forward to the kagent controller (Act 4 reads the session API).
 CTRL_PF_PID=""
 start_ctrl_pf() {
+  # Act 4 talks to the kagent controller on :8083 for the session and task
+  # records. MUST be called before anything that uses sre-bot.sh, because that
+  # script posts through the same port — without it Step 1 silently produces no
+  # evidence and Step 3 then "fails" for the wrong reason.
   curl -s --connect-timeout 2 "${CTRL}/api/agents" >/dev/null 2>&1 && return 0
+  pkill -f "port-forward.*svc/kagent-controller 8083:8083" 2>/dev/null || true
   kubectl port-forward -n "${KAGENT_NS}" svc/kagent-controller 8083:8083 >/dev/null 2>&1 &
   CTRL_PF_PID=$!
-  sleep 3
-  curl -s --connect-timeout 2 "${CTRL}/api/agents" >/dev/null 2>&1
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    sleep 1
+    curl -s --connect-timeout 2 "${CTRL}/api/agents" >/dev/null 2>&1 && return 0
+  done
+  return 1
 }
 cleanup() { [ -n "${CTRL_PF_PID}" ] && kill "${CTRL_PF_PID}" 2>/dev/null; return 0; }
 trap cleanup EXIT
@@ -297,7 +396,7 @@ reset_demo() {
     governed-llm-waf mcp-governed-waf access-logs -n "${AGW_NS}" 2>/dev/null || true
   kubectl delete wafpolicy governed-llm-waf mcp-governed-waf -n "${AGW_NS}" 2>/dev/null || true
   kubectl delete httproute governed-llm mcp-governed -n "${AGW_NS}" 2>/dev/null || true
-  kubectl delete agentgatewaybackend anthropic-governed -n "${AGW_NS}" 2>/dev/null || true
+  kubectl delete agentgatewaybackend governed-llm-backend anthropic-governed -n "${AGW_NS}" 2>/dev/null || true
   # Act 4 scales an agent to zero. If the demo was interrupted mid-act, restore it.
   kubectl scale deploy/"${FORENSIC_AGENT}" -n "${KAGENT_NS}" --replicas=1 >/dev/null 2>&1 || true
   echo -e "${GREEN}Demo resources cleared. Infrastructure and the other demos are intact.${NC}"
@@ -340,6 +439,14 @@ preflight() {
   kubectl get deploy waf-server-enterprise-agentgateway -n "${AGW_NS}" >/dev/null 2>&1 \
     && check_ok "WAF server deployed (Act 3)" \
     || { check_fail "waf-server not found — Act 3 will fail"; ok=false; }
+
+  if start_ctrl_pf; then
+    check_ok "kagent controller reachable on :8083 (Act 4 evidence)"
+  else
+    check_fail "kagent controller not reachable on :8083 — Act 4 records no evidence."
+    check_fail "  kubectl port-forward -n ${KAGENT_NS} svc/kagent-controller 8083:8083"
+    ok=false
+  fi
 
   kubectl get pod "${CLICKHOUSE_POD}" -n "${KAGENT_NS}" >/dev/null 2>&1 \
     && check_ok "ClickHouse present (Act 5 queries)" \
@@ -435,9 +542,9 @@ show_curl "curl -i localhost:8081/governed-llm/v1/chat/completions" \
   "-d '{\"model\":\"claude-haiku-4-5\",\"max_tokens\":16,\"messages\":[...]}'"
 pause
 BODY_OK=$(chat_body "claude-haiku-4-5" "Say OK.")
-expect "no token" "401" "$(llm_code "" "$BODY_OK")"
-expect "forged token" "401" "$(llm_code "not.a.jwt" "$BODY_OK")"
-expect "maria's real Keycloak JWT" "200" "$(llm_code "$MARIA" "$BODY_OK")"
+gov_probe "no token" "401" "${DIM}(no Authorization header)${NC}" "" "$BODY_OK"
+gov_probe "forged token" "401" "Authorization: Bearer ${YELLOW}not.a.jwt${NC}" "not.a.jwt" "$BODY_OK"
+gov_probe "maria's real Keycloak JWT" "200" "Authorization: Bearer ${GREEN}\$MARIA${NC}   ${DIM}(real Keycloak JWT)${NC}" "$MARIA" "$BODY_OK"
 callout "401 at the gateway: no Anthropic call, no token spend, no shadow AI."
 callout "The 200 is now ATTRIBUTED — Act 5 shows that row with maria's name on it."
 pause
@@ -461,14 +568,25 @@ scene "Probe it live — the gateway's answer tells you the STS state"
 narrate "The STS is in-pod SQLite, so a rebuilt gateway pod has no stored tokens"
 narrate "and the consent is redone once per cluster. That is exactly the state"
 narrate "machine a security team wants to see."
+narrate ""
+narrate "One MCP initialize against the GitHub server, carrying demo's CORPORATE"
+narrate "token. Note what is NOT in this request: any GitHub credential."
+show_curl "curl -s localhost:8081/mcp/github-remote" \
+  "-H \"Authorization: Bearer \$DEMO\"        # Keycloak JWT, not a GitHub PAT" \
+  "-H 'content-type: application/json'" \
+  "-H 'accept: application/json, text/event-stream'" \
+  "-d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\", ...}'"
+pause
 if [ "$SILENT" = "true" ]; then
   :
 else
-  GH_PROBE=$(curl -s --max-time 15 "${AGW_PROXY}/mcp/github-remote" \
+  GH_RAW=$(curl -s -D - --max-time 15 "${AGW_PROXY}/mcp/github-remote" \
     -H "Authorization: Bearer ${DEMO}" \
     -H 'content-type: application/json' \
     -H 'accept: application/json, text/event-stream' \
     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"governance-probe","version":"1"}}}' 2>/dev/null)
+  GH_SID=$(printf '%s' "$GH_RAW" | awk 'tolower($1)=="mcp-session-id:"{print $2}' | tr -d '\r')
+  GH_PROBE=$(printf '%s' "$GH_RAW" | sed -n '/^data: /,$p')
   ELICIT_PENDING=false
   if echo "$GH_PROBE" | grep -q 'token not available in STS'; then
     ELICIT_PENDING=true
@@ -477,31 +595,58 @@ else
       | grep -q 'elicitation_pending' && ELICIT_PENDING=true
   fi
 
+  show_mcp "the gateway's answer:" "$GH_PROBE"
+
   if echo "$GH_PROBE" | grep -q '"result"'; then
     check_ok "STS already holds a GitHub token for 'demo' — the MCP session opened."
     callout "That IS the OBO flow: a stored per-user token, keyed by the Keycloak identity."
+    callout "The caller sent a corporate JWT. GitHub saw demo's own GitHub token."
+    narrate ""
+    narrate "Now the proof that this was an EXCHANGE and not a passthrough. Ask the"
+    narrate "GitHub server who it thinks is calling:"
+    show_send "${BOLD}tools/call${NC}  ${GREEN}get_me${NC}   ${DIM}(GitHub's \"who am I?\" tool)${NC}"
+    if gh_whoami "$GH_SID"; then
+      check_ok "GitHub answered as a real user account: ${GH_LOGIN}"
+      callout "The caller presented a KEYCLOAK JWT. GitHub answered with that user's"
+      callout "own account. No shared PAT, no service account, full attribution."
+    else
+      check_fail "get_me did not return an identity — the stored token may have been revoked."
+    fi
   elif [ "$ELICIT_PENDING" = "true" ]; then
     check_ok "Gateway refused the MCP init (no stored token) and created a pending consent."
-    narrate "(proxy log: token exchange → 'elicitation_pending')"
+    narrate ""
+    narrate "The refusal above is the STS saying 'I have no token for this user'."
+    narrate "The proxy log names the reason:"
+    run_cmd "kubectl logs deploy/agentgateway-proxy -n ${AGW_NS} --since=60s | grep -i elicitation | tail -2"
     if [ "$CHECK_MODE" = "false" ]; then
       echo ""
       echo -e "  ${BOLD}Open this, sign in (demo / demo), and click Authorize:${NC}"
       echo -e "    ${GREEN}http://localhost:9090/age/elicitations${NC}"
       echo ""
       ui_moment "Authorize the pending consent, then come back."
-      GH_VERIFY=$(curl -s --max-time 15 "${AGW_PROXY}/mcp/github-remote" \
+      narrate "Now the IDENTICAL call again. Nothing changed on the client side:"
+      GH_VERIFY_RAW=$(curl -s -D - --max-time 15 "${AGW_PROXY}/mcp/github-remote" \
         -H "Authorization: Bearer ${DEMO}" -H 'content-type: application/json' \
         -H 'accept: application/json, text/event-stream' \
         -d '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"verify","version":"1"}}}' 2>/dev/null)
+      GH_VERIFY=$(printf '%s' "$GH_VERIFY_RAW" | sed -n '/^data: /,$p')
+      show_mcp "same request, after consent:" "$GH_VERIFY"
       if echo "$GH_VERIFY" | grep -q '"result"'; then
-        check_ok "Same call again → a real MCP session. The gateway now holds demo's GitHub token."
+        check_ok "A real MCP session. The gateway now holds demo's GitHub token."
+        GH_SID2=$(printf '%s' "$GH_VERIFY_RAW" | awk 'tolower($1)=="mcp-session-id:"{print $2}' | tr -d '\r')
+        narrate ""
+        narrate "And who does GitHub think is calling?"
+        show_send "${BOLD}tools/call${NC}  ${GREEN}get_me${NC}"
+        if gh_whoami "${GH_SID2:-$GH_SID}"; then
+          check_ok "GitHub answered as a real user account: ${GH_LOGIN}"
+        fi
         callout "Every later call by this user rides that token. Revoke the user, revoke the access."
       else
         check_fail "STS still empty — was the consent completed? Retry at :9090/age/elicitations."
       fi
     fi
   else
-    check_fail "Unexpected probe response:"
+    check_fail "Unexpected probe response (raw):"
     echo "$GH_PROBE" | head -c 300 | sed 's/^/    /'; echo
   fi
 fi
@@ -549,10 +694,13 @@ show_curl "curl -s -o /dev/null -w '%{http_code}' localhost:8081/governed-llm/v1
   "-H 'content-type: application/json'" \
   "-d '{\"model\":\"claude-haiku-4-5\", ...}'"
 pause
-expect "maria (US) → approved model" "200" "$(llm_code "$MARIA" "$BODY_OK")"
-expect "pat (IR) → same approved model" "403" "$(llm_code "$PAT" "$BODY_OK")"
-expect "maria (US) → model NOT on the allowlist" "403" "$(llm_code "$MARIA" "$BODY_BAD_MODEL")"
-expect "no identity at all" "401" "$(llm_code "" "$BODY_OK")"
+gov_probe "maria (US) → approved model" "200" \
+  "${GREEN}maria${NC} (country=US)  model=${GREEN}claude-haiku-4-5${NC}" "$MARIA" "$BODY_OK"
+gov_probe "pat (IR) → same approved model" "403" \
+  "${YELLOW}pat${NC} (country=IR)  model=${GREEN}claude-haiku-4-5${NC}   ${DIM}same request, different country${NC}" "$PAT" "$BODY_OK"
+gov_probe "maria (US) → model NOT on the allowlist" "403" \
+  "${GREEN}maria${NC} (country=US)  model=${YELLOW}claude-opus-4-1${NC}   ${DIM}not approved${NC}" "$MARIA" "$BODY_BAD_MODEL"
+gov_probe "no identity at all" "401" "${DIM}(no Authorization header)${NC}" "" "$BODY_OK"
 callout "pat's request never reached Anthropic. Nothing was exported, logged"
 callout "upstream, or billed. The control is at the boundary, not in an agent."
 pause
@@ -574,13 +722,15 @@ pause
 scene "Verify: the alias resolves, and the response names the real model"
 if [ "$CHECK_MODE" = "false" ] && [ "$SILENT" = "false" ]; then
   for m in acme-standard acme-premium; do
+    show_send "model=${BOLD}${m}${NC}   ${DIM}(a name the platform team owns)${NC}"
     R=$(llm_json "$MARIA" "$(chat_body "$m" "Say OK.")")
     printf "  %-20s → served by ${GREEN}%s${NC}\n" "$m" "$(echo "$R" | jq -r '.model // .error.message')"
+    echo "$R" | jq -r '"      reply: \(.choices[0].message.content // "—")"'
   done
 else
-  expect "acme-standard resolves" "claude-haiku-4-5-20251001" \
+  expect_match "acme-standard resolves" '^claude-haiku-4-5' \
     "$(llm_json "$MARIA" "$(chat_body "acme-standard" "Say OK.")" | jq -r '.model // "none"')"
-  expect "acme-premium resolves" "claude-sonnet-4-6" \
+  expect_match "acme-premium resolves" '^claude-sonnet-4-6' \
     "$(llm_json "$MARIA" "$(chat_body "acme-premium" "Say OK.")" | jq -r '.model // "none"')"
 fi
 callout "One YAML line moves every 'standard' caller to a different model or"
@@ -792,6 +942,7 @@ narrate "workload does not touch either one."
 pause
 
 scene "Step 1 — the agent does real work (this is the evidence)"
+start_ctrl_pf || check_fail "Could not reach the kagent controller on :8083"
 narrate "A Slack-style SRE bot calls a kagent agent over A2A, carrying a real"
 narrate "user identity. The agent calls a model and a tool through the gateway."
 if [ "$CHECK_MODE" = "false" ] && [ "$SILENT" = "false" ]; then
@@ -799,7 +950,6 @@ if [ "$CHECK_MODE" = "false" ] && [ "$SILENT" = "false" ]; then
 else
   "${SCRIPT_DIR}/sre-bot.sh" --agent "${FORENSIC_AGENT}" "Is it raining in Portland, Oregon right now? One sentence." >/dev/null 2>&1
 fi
-start_ctrl_pf || check_fail "Could not reach the kagent controller on :8083"
 KTOK=$(curl -s --max-time 10 -X POST "${KC_URL}/realms/${KC_REALM}/protocol/openid-connect/token" \
   -d grant_type=password -d client_id=kagent-ui -d username=demo -d password=demo -d scope=openid | jq -r .access_token)
 SID4=$(curl -s --max-time 10 "${CTRL}/api/sessions" -H "Authorization: Bearer ${KTOK}" \

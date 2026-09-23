@@ -55,6 +55,7 @@ spec:
         # Cuba, Iran, North Korea, Syria. The source of truth belongs in your
         # GRC system; this is where it gets ENFORCED. Add a virtual model name
         # to the allowlist once you alias it (03-model-aliases.yaml).
+        # OpenAI fallback list: ['gpt-4o-mini', 'gpt-4o', 'acme-standard', 'acme-premium']
         - >-
           has(jwt.country) && !(jwt.country in ['CU', 'IR', 'KP', 'SY'])
           && json(request.body).model in ['claude-sonnet-4-6', 'claude-haiku-4-5', 'acme-standard', 'acme-premium']

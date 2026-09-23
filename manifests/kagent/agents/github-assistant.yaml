@@ -39,6 +39,8 @@ spec:
       authorization or token-exchange error, tell the user to complete the GitHub
       consent at http://localhost:9090/age/elicitations and try again.
     modelConfig: anthropic-via-agw
+    # FALLBACK: openai-via-agw — switch to this if the Anthropic key
+    # runs dry. Every call through a dry key returns a provider 400.
     deployment:
       env:
       - name: KAGENT_PROPAGATE_TOKEN     # forward the caller's Authorization to the MCP (OBO)
